@@ -6,6 +6,10 @@ $Z = (Get-ChildItem (Join-Path $env:USERPROFILE 'Downloads') -Directory -Filter 
     Sort-Object { [version](($_.Name -replace '^zapret-discord-youtube-', '') -replace '[^0-9.]', '') } | Select-Object -Last 1).FullName
 $HERE = $PSScriptRoot
 $LOG = Join-Path $HERE 'zapret-youtube.log'
+if (-not $Z) {
+    "[{0}] zapret не найден: в «Загрузках» нет папки zapret-discord-youtube-…. Нажмите в окне «Скачать и поставить zapret»." -f (Get-Date -Format 'HH:mm:ss') | Out-File $LOG -Append -Encoding utf8
+    exit 2
+}
 # ссылка на видеопоток живёт несколько часов и привязана к IP — берём свежую напрямую, пока zapret ещё стоит
 $YTDLP = (Get-Command yt-dlp.exe -ErrorAction SilentlyContinue).Source; if (-not $YTDLP) { $YTDLP = 'yt-dlp.exe' }
 $URL = ''

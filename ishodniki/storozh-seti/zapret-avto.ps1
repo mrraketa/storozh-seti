@@ -7,6 +7,10 @@ $ErrorActionPreference = 'Continue'
 $Z = (Get-ChildItem (Join-Path $env:USERPROFILE 'Downloads') -Directory -Filter 'zapret-discord-youtube-*' | Where-Object { Test-Path (Join-Path $_.FullName 'service.bat') } |
     Sort-Object { [version](($_.Name -replace '^zapret-discord-youtube-', '') -replace '[^0-9.]', '') } | Select-Object -Last 1).FullName
 $LOG = Join-Path $PSScriptRoot 'zapret-avto.log'
+if (-not $Z) {
+    "[{0}] zapret не найден: в «Загрузках» нет папки zapret-discord-youtube-…. Нажмите в окне «Скачать и поставить zapret»." -f (Get-Date -Format 'HH:mm:ss') | Out-File $LOG -Append -Encoding utf8
+    exit 2
+}
 $FALLBACK = 'general (ALT13)'   # что стояло раньше — вернуть, если тест не удался
 function L($m) { "[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $m | Out-File $LOG -Append -Encoding utf8 }
 

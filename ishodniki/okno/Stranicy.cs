@@ -576,7 +576,8 @@ partial class Okno
         bool rab = Pult.B(sost, "zapret");
         var top = new Kartochka { Width = W, Height = 64, Margin = new Padding(0, 0, 0, 12) };
         top.Controls.Add(new Krug { Size = new Size(34, 34), Location = new Point(14, 15), Cvet = rab ? Zel : Kras, Galka = rab });
-        top.Controls.Add(Zg(rab ? "Работает · стратегия " + Pult.S(sost, "strategiya") : "Не работает", 60, 10, 12f));
+        bool netZapreta = zapData != null && Pult.S(zapData, "versiya") == "";
+        top.Controls.Add(Zg(rab ? "Работает · стратегия " + Pult.S(sost, "strategiya") : netZapreta ? "zapret не установлен" : "Не работает", 60, 10, 12f));
         string vText = zapData == null ? "проверяю…" : "версия " + Pult.S(zapData, "versiya") +
             (Pult.S(zapData, "posledn") == "" ? " · последнюю на GitHub узнать не удалось" : Sravnit(Pult.S(zapData, "posledn"), Pult.S(zapData, "versiya")) > 0 ? " · есть новее: " + Pult.S(zapData, "posledn") : " · последняя, обновлять не нужно");
         top.Controls.Add(Np(vText, 62, 36, true));
@@ -622,8 +623,10 @@ partial class Okno
         var b2 = KnZ("Быстрее YouTube", "\uE714", () => ZapustitSkript("zapret: быстрее YouTube", "zapret-youtube.ps1", "zapret-youtube.log", "Идёт несколько минут. YouTube и сайты без VPN будут прерываться. Начать?"), false, 200);
         string ver = Pult.S(zapData, "versiya"), posl = Pult.S(zapData, "posledn");
         bool estNovee = zapData != null && posl != "" && ver != "" && Sravnit(posl, ver) > 0;
-        var b3 = KnZ(estNovee ? "Обновить до " + posl : "Обновить zapret", "\uE896", ObnovitZapret, estNovee, 200);
-        b3.Visible = estNovee || (zapData != null && posl == "");
+        bool netZ = zapData != null && ver == "";
+        var b3 = KnZ(netZ ? "Скачать и поставить zapret" : estNovee ? "Обновить до " + posl : "Обновить zapret", "\uE896", ObnovitZapret, estNovee || netZ, netZ ? 290 : 200);
+        b3.Visible = estNovee || netZ || (zapData != null && posl == "");
+        b1.Visible = b2.Visible = !netZ;
         var knopkiZ = new FlowLayoutPanel { Location = new Point(14, 14), Size = new Size(W - 28, 90), WrapContents = true, BackColor = Color.Transparent };
         foreach (var bb in new[] { b1, b2, b3 }) { bb.Margin = new Padding(0, 0, 10, 8); knopkiZ.Controls.Add(bb); }
         dey.Controls.Add(knopkiZ);
@@ -655,7 +658,9 @@ partial class Okno
     void ObnovitZapret()
     {
         ZapustitSkript("обновление zapret", "zapret-obnovit.ps1", "zapret-obnovit.log",
-            "Проверю новую версию zapret на GitHub (Flowseal/zapret-discord-youtube). Если она есть — скачаю архив (~4 МБ) в «Загрузки», перенесу ваши списки и поставлю ту же стратегию. Старая версия останется на месте. Начать?");
+            zapData != null && Pult.S(zapData, "versiya") == ""
+            ? "Скачаю zapret с GitHub (Flowseal/zapret-discord-youtube, архив ~4 МБ) в «Загрузки» и поставлю службу со стратегией general (ALT13). Windows спросит разрешение. Начать?"
+            : "Проверю новую версию zapret на GitHub (Flowseal/zapret-discord-youtube). Если она есть — скачаю архив (~4 МБ) в «Загрузки», перенесу ваши списки и поставлю ту же стратегию. Старая версия останется на месте. Начать?");
     }
 
     void ZapustitSkript(string chto, string fayl, string log, string vopros)

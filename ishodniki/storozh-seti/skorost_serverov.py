@@ -139,6 +139,8 @@ def main():
         print("площадки:", [(h[0], h[3]) for h in HOSTS])
         servers = [t for t in s.candidates() if s.delay(t, 3000)]
         print("живых серверов:", len(servers))
+        if not servers:
+            raise RuntimeError("в подписке Karing нет отвечающих серверов — проверьте, что подписка обновлена и Karing включён")
         set_test_groups(servers)
         if not restart():
             raise RuntimeError("Karing не поднялся после добавления тестовых правил")

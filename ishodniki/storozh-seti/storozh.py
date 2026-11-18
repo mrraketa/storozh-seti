@@ -24,8 +24,19 @@ KFILES = ["karing_subscribe_use.json", "karing_routing_group.json", "karing_sett
 STEAM = r"C:\Program Files (x86)\Steam"
 STEAM_LOG = os.path.join(STEAM, "logs", "connection_log.txt")
 
-RULES = "http://127.0.0.1:3067"   # как ходят программы (по правилам)
-VPN = "http://127.0.0.1:3066"     # принудительно через VPN
+def _porty_karing():
+    """Порты Karing — из его же настроек (mixed_in_rule / mixed_in_proxy); у всех по умолчанию 3067 / 3066."""
+    try:
+        with open(os.path.join(os.environ.get("APPDATA") or "", "karing", "karing", "service_core.json"), encoding="utf-8") as f:
+            vh = {i.get("tag"): i.get("listen_port") for i in json.load(f).get("inbounds", [])}
+        return vh.get("mixed_in_rule") or 3067, vh.get("mixed_in_proxy") or 3066
+    except Exception:
+        return 3067, 3066
+
+
+_PR, _PV = _porty_karing()
+RULES = f"http://127.0.0.1:{_PR}"   # как ходят программы (по правилам)
+VPN = f"http://127.0.0.1:{_PV}"     # принудительно через VPN
 AUTO_GROUP = "🤖 Авто VPN"
 DIRECT_GROUP = "↩️ Напрямую: сайты против VPN"  # сайты, которые отказывают адресам VPN (DDoS-Guard и т.п.), а напрямую работают
 REFUSE = {"403", "429", "500", "502", "503", "521", "522"}
@@ -156,7 +167,8 @@ def save_json(path, obj):
     os.replace(tmp, path)
 
 
-def port_up(port=3067):
+def port_up(port=None):
+    port = port or _PR
     s = socket.socket(); s.settimeout(1)
     try:
         s.connect(("127.0.0.1", port)); return True
@@ -821,9 +833,14 @@ def current_vpn_server():
     return None
 
 
+PROXY_TYPES = {"vless", "vmess", "trojan", "shadowsocks", "hysteria", "hysteria2", "tuic", "wireguard", "socks", "http", "shadowtls", "anytls"}
+
+
 def candidates():
-    return [o["tag"] for o in load_json(CORE, {}).get("outbounds", [])
-            if o.get("type") == "vless" and GOOD_SERVER.search(o["tag"]) and not BAD_SERVER.search(o["tag"])]
+    """Серверы подписки. У него — основные с «🔃» в имени; у друга имена другие — тогда все серверы, кроме российских и спецсерверов."""
+    vse = [o["tag"] for o in load_json(CORE, {}).get("outbounds", []) if o.get("type") in PROXY_TYPES and o.get("tag")]
+    svoi = [t for t in vse if GOOD_SERVER.search(t) and not BAD_SERVER.search(t)]
+    return svoi or [t for t in vse if not BAD_SERVER.search(t)] or vse
 
 
 def sub_id(use):

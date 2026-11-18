@@ -43,6 +43,7 @@ try {
     }
     $strat = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\zapret' -ErrorAction SilentlyContinue).'zapret-discord-youtube'
     if (-not $strat) { $strat = 'general (ALT13)' }
+    if (-not (Test-Path (Join-Path $cel "$strat.bat"))) { $strat = (Get-ChildItem $cel -Filter 'general*.bat' | Select-Object -First 1).BaseName; L "такой стратегии в новой версии нет — беру $strat" }
     L "ставлю службу новой версии со стратегией: $strat"
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'zapret-avto.ps1') -Install $strat
     $svc = Get-Service zapret -ErrorAction SilentlyContinue

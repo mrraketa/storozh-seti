@@ -30,10 +30,27 @@ static class Programma
         AppDomain.CurrentDomain.UnhandledException += (s, e) => Okno.Zapis("ОШИБКА в фоне: " + e.ExceptionObject);
         int i = Array.IndexOf(args, "--snimki");
         if (i >= 0 && i + 1 < args.Length) { Okno.Snimki(args[i + 1]); return; }
+        int iPr = Array.IndexOf(args, "--proba-okno");
+        if (iPr >= 0 && iPr + 1 < args.Length)
+        {
+            // проверка настоящего пути запуска (как у пользователя, с фоновым обновлением), но за экраном и без значка
+            var o = new Okno(true); o.ShowInTaskbar = false; o.StartPosition = FormStartPosition.Manual; o.Location = new Point(-20000, -20000);
+            var t = new System.Windows.Forms.Timer { Interval = 12000 };
+            t.Tick += (s2, e2) =>
+            {
+                t.Stop();
+                using (var b = new Bitmap(o.Width, o.Height)) { o.DrawToBitmap(b, new Rectangle(0, 0, o.Width, o.Height)); b.Save(args[iPr + 1]); }
+                Okno.Zapis("[проба] элементов на странице: " + o.soderzh.Controls.Count + (o.soderzh.Controls.Count > 0 ? ", первая: " + o.soderzh.Controls[0].GetType().Name + " " + o.soderzh.Controls[0].Size + " детей " + o.soderzh.Controls[0].Controls.Count : ""));
+                o.Close();
+            };
+            o.Shown += (s2, e2) => t.Start();
+            Application.Run(o);
+            return;
+        }
         if (Array.IndexOf(args, "--samoproverka") >= 0) { try { Environment.ExitCode = Okno.Samoproverka(); } catch (Exception e) { Console.WriteLine("ОШИБКА: " + e); Environment.ExitCode = 99; } return; }
         if (Array.IndexOf(args, "--test-klik") >= 0) { try { Okno.TestKlik(); } catch (Exception e) { Console.WriteLine("ОШИБКА: " + e); } return; }
         bool novaya;
-        using (var m = new Mutex(true, "StorozhSetiOkno", out novaya))
+        using (var m = new Mutex(true, "StorozhSetiOkno" + (Environment.GetEnvironmentVariable("STOROZH_MUTEX") ?? ""), out novaya))
         {
             if (!novaya)
             {
@@ -141,7 +158,7 @@ partial class Okno : Form
         p.Navedenie = Color.FromArgb(54, 54, 64); p.Radius = 8; p.Vtorichnyy = Color.FromArgb(145, 145, 158);
         return p;
     }
-    Panel menu, soderzh;
+    Panel menu; internal Panel soderzh;
     Label zanyatoStroka;
     readonly List<Knopa> punkty = new List<Knopa>();
     readonly Dictionary<string, Panel> stranicy = new Dictionary<string, Panel>();
@@ -298,22 +315,32 @@ partial class Okno : Form
     void Perestroit()
     {
         soderzh.SuspendLayout();
-        soderzh.Controls.Clear();
-        Panel p;
-        switch (tekushchaya)
+        try
         {
-            case "programmy": p = StrProgrammy(); break;
-            case "sayty": p = StrSayty(); break;
-            case "servery": p = StrServery(); break;
-            case "zapret": p = StrZapret(); break;
-            case "zhurnal": p = StrZhurnal(); break;
-            case "nastroyki": p = StrNastroyki(); break;
-            default: p = StrGlavnaya(); break;
+            soderzh.Controls.Clear();
+            Panel p;
+            switch (tekushchaya)
+            {
+                case "programmy": p = StrProgrammy(); break;
+                case "sayty": p = StrSayty(); break;
+                case "servery": p = StrServery(); break;
+                case "zapret": p = StrZapret(); break;
+                case "zhurnal": p = StrZhurnal(); break;
+                case "nastroyki": p = StrNastroyki(); break;
+                default: p = StrGlavnaya(); break;
+            }
+            p.Dock = DockStyle.Fill;
+            soderzh.Controls.Add(p);
         }
-        p.Dock = DockStyle.Fill;
-        soderzh.Controls.Add(p);
-        soderzh.ResumeLayout();
-        Perekrasit();
+        catch (Exception e)
+        {
+            // 19.11: в Коробке раздел оставался пустым — ошибку глотал Windows. Теперь видно и в окне, и в журнале.
+            Zapis("ОШИБКА раздела " + tekushchaya + ": " + e.GetType().Name + ": " + e.Message + " | " + (e.StackTrace ?? "").Replace(Environment.NewLine, " / "));
+            soderzh.Controls.Clear();
+            soderzh.Controls.Add(new Label { Dock = DockStyle.Fill, Text = "Не получилось показать раздел: " + e.Message + Environment.NewLine + "Подробности — в журнале программы. Нажмите раздел ещё раз.", Padding = new Padding(10) });
+        }
+        finally { soderzh.ResumeLayout(); }
+        try { Perekrasit(); } catch (Exception e) { Zapis("ОШИБКА покраски: " + e.Message); }
     }
 
     // ---------- вид ----------
