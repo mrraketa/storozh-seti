@@ -24,6 +24,10 @@ static class Programma
     {
         try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
         Application.EnableVisualStyles();
+        // ни одного окна «Необрабатываемое исключение»: ошибка уходит в журнал, программа работает дальше
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (s, e) => Okno.Zapis("ОШИБКА (окно не показано): " + e.Exception.GetType().Name + ": " + e.Exception.Message + " | " + (e.Exception.StackTrace ?? "").Split('\n').FirstOrDefault());
+        AppDomain.CurrentDomain.UnhandledException += (s, e) => Okno.Zapis("ОШИБКА в фоне: " + e.ExceptionObject);
         int i = Array.IndexOf(args, "--snimki");
         if (i >= 0 && i + 1 < args.Length) { Okno.Snimki(args[i + 1]); return; }
         if (Array.IndexOf(args, "--test-klik") >= 0) { try { Okno.TestKlik(); } catch (Exception e) { Console.WriteLine("ОШИБКА: " + e); } return; }

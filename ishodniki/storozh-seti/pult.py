@@ -330,9 +330,9 @@ def set_seychas():
     b, vb = _netstat_bayty(), vpn_snap()
     if not a or not b:
         out({"ok": False, "info": "netstat не ответил"}); return
-    vniz = max(0, (b[0] - a[0]) % (1 << 32)) * 8 / 2 / 1e6
-    vverh = max(0, (b[1] - a[1]) % (1 << 32)) * 8 / 2 / 1e6
-    out({"ok": True, "vniz": round(vniz, 2), "vverh": round(vverh, 2), "vpn": round(max(0, vb - va) * 8 / 2 / 1e6, 2)})
+    vniz = max(0, (b[0] - a[0]) % (1 << 32)) / 2 / 1e6
+    vverh = max(0, (b[1] - a[1]) % (1 << 32)) / 2 / 1e6
+    out({"ok": True, "vniz": round(vniz, 2), "vverh": round(vverh, 2), "vpn": round(max(0, vb - va) / 2 / 1e6, 2)})
 
 
 def test_seti():
@@ -440,22 +440,36 @@ def ustanovit_zadaniya():
 
 # ---------- для «Живого монитора» ----------
 
+SNIMOK = os.path.join(os.environ.get("TEMP", HERE), "storozh-seti-snimok.json")
+
+
 def skorosti():
-    """Скорость каждой программы сейчас: два снимка соединений Karing с паузой 2 с."""
+    """Нагрузка каждой программы сейчас, МБ/с. Счётчики байтов Karing — разница с прошлым опросом
+    (окно спрашивает раз в 5 с; прошлый снимок лежит в TEMP). Первый раз — два снимка с паузой 2 с."""
     def snap():
         d = {}
         for c in clash("/connections").get("connections", []):
             exe = (c["metadata"].get("processPath") or "").split("\\")[-1]
             if exe:
-                d[c["id"]] = (exe, c.get("download", 0) + c.get("upload", 0), (c.get("chains") or ["?"])[0])
+                d[c["id"]] = [exe, c.get("download", 0) + c.get("upload", 0), (c.get("chains") or ["?"])[0]]
         return d
-    a = snap(); time.sleep(2); b = snap()
+    sejchas = time.time()
+    proshl = s.load_json(SNIMOK, None)
+    if not proshl or sejchas - proshl.get("t", 0) > 30:
+        proshl = {"t": time.time(), "s": snap()}
+        time.sleep(2)
+        sejchas = time.time()
+    b = snap()
+    s.save_json(SNIMOK, {"t": sejchas, "s": b})
+    dt = max(0.5, sejchas - proshl["t"])
+    a = proshl["s"]
     sk = {}
     for k, (exe, v, kuda) in b.items():
         x = sk.setdefault(exe, {"bait": 0, "kuda": set()})
-        x["bait"] += max(0, v - a.get(k, (exe, v, kuda))[1])
+        bylo = a.get(k)
+        x["bait"] += max(0, v - (bylo[1] if bylo else 0))   # новое соединение — всё, что оно успело скачать
         x["kuda"].add(kuda)
-    out({"skorosti": {e: {"mbit": round(x["bait"] * 8 / 2 / 1e6, 2),
+    out({"skorosti": {e: {"mbayt": round(x["bait"] / dt / 1e6, 3),
                           "kuda": ", ".join(sorted("напрямую" if k == "direct_out" else k for k in x["kuda"]))} for e, x in sk.items()}})
 
 
@@ -519,7 +533,14 @@ def zapret_sost():
             key=lambda n: [int(x) for x in re.findall(r"\d+", n)])[-1:]), ""))
     except OSError:
         pass
-    out({"youtube": [kod, round(t, 2), s.ok(kod)], "golos": golos, "versiya": ver.replace("zapret-discord-youtube-", "")})
+    posl = ""
+    try:
+        import urllib.request
+        rq = urllib.request.Request("https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest", headers={"User-Agent": "storozh-seti"})
+        posl = json.load(urllib.request.urlopen(rq, timeout=10)).get("tag_name", "").lstrip("v")
+    except Exception as e:
+        log(f"zapret: версия на GitHub не узнал: {e!r}")
+    out({"youtube": [kod, round(t, 2), s.ok(kod)], "golos": golos, "versiya": ver.replace("zapret-discord-youtube-", ""), "posledn": posl})
 
 
 def discord_golos():

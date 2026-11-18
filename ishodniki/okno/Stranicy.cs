@@ -68,20 +68,21 @@ partial class Okno
     void PokazatSet()
     {
         if (setVniz == null || setVniz.IsDisposed || setData == null || !Pult.B(setData, "ok")) return;
-        setVniz.Text = Convert.ToDouble(setData["vniz"]).ToString("0.0");
-        setVverh.Text = Convert.ToDouble(setData["vverh"]).ToString("0.0");
-        setVpn.Text = Convert.ToDouble(setData["vpn"]).ToString("0.0");
+        setVniz.Text = Convert.ToDouble(setData["vniz"]).ToString("0.00");
+        setVverh.Text = Convert.ToDouble(setData["vverh"]).ToString("0.00");
+        setVpn.Text = Convert.ToDouble(setData["vpn"]).ToString("0.00");
     }
 
     void PokazatSkorosti()
     {
         var sk = Pult.D(skorData != null && skorData.ContainsKey("skorosti") ? skorData["skorosti"] : null);
-        double max = Math.Max(5, sk.Values.Select(v => Convert.ToDouble(Pult.D(v)["mbit"])).DefaultIfEmpty(0).Max());
+        double max = Math.Max(0.5, sk.Values.Select(v => Convert.ToDouble(Pult.D(v)["mbayt"])).DefaultIfEmpty(0).Max());
         foreach (var kv in zhivye)
         {
             object v; double mb = 0; string kuda = null;
-            if (sk.TryGetValue(kv.Key, out v)) { mb = Convert.ToDouble(Pult.D(v)["mbit"]); kuda = Pult.S(Pult.D(v), "kuda"); }
-            kv.Value.Item1.Text = mb >= 0.05 ? mb.ToString("0.0") + " Мбит/с" : "—";
+            bool est = sk.TryGetValue(kv.Key, out v);
+            if (est) { mb = Convert.ToDouble(Pult.D(v)["mbayt"]); kuda = Pult.S(Pult.D(v), "kuda"); }
+            kv.Value.Item1.Text = est ? MBs(mb) : "не видно";
             kv.Value.Item2.Dolya = mb / max; kv.Value.Item2.Invalidate();
             if (kuda != null && kv.Value.Item3 != null) kv.Value.Item3.Text = Pult.Chisto(kuda);
         }
@@ -150,9 +151,9 @@ partial class Okno
         var vyb = Spiski(st, "vybory");
         double obychno = vyb.Count > 1 ? vyb.Take(vyb.Count - 1).Select(v => Convert.ToDouble(v[2])).DefaultIfEmpty(0).Average() : 0;
         sp.Controls.Add(Np("Скорость VPN", 16, 12, true));
-        sp.Controls.Add(new Spidometr { Zn = skor, Max = Math.Max(300, skor), Location = new Point(15, 34), Size = new Size(200, 120) });
+        sp.Controls.Add(new Spidometr { Zn = Math.Round(skor / 8, 1), Max = Math.Max(40, skor / 8), Ed = "МБ/с", Location = new Point(15, 34), Size = new Size(200, 120) });
         sp.Controls.Add(Np(Pult.S(sost, "server") + " · по замеру", 16, 158, false, 200));
-        if (obychno > 0) sp.Controls.Add(Np("обычно у тебя ~" + obychno.ToString("0") + " Мбит/с", 16, 182, true, 200));
+        if (obychno > 0) sp.Controls.Add(Np("обычно у тебя ~" + (obychno / 8).ToString("0") + " МБ/с", 16, 182, true, 200));
         ryad.Controls.Add(sp);
 
         var su = new Kartochka { Width = W - 242, Height = 220, Location = new Point(242, 0) };
@@ -185,7 +186,7 @@ partial class Okno
         set.Controls.Add(Zg("Сеть сейчас", 16, 12));
         set.Controls.Add(Np("весь компьютер, обновляется каждые 5 с", 130, 15, true));
         int sx = 16;
-        foreach (var c in new[] { Tuple.Create("\uE896", "Скачивание", "Мбит/с"), Tuple.Create("\uE898", "Отдача", "Мбит/с"), Tuple.Create(Zn.Shit, "Из них через VPN", "Мбит/с") })
+        foreach (var c in new[] { Tuple.Create("\uE896", "Скачивание", "МБ/с"), Tuple.Create("\uE898", "Отдача", "МБ/с"), Tuple.Create(Zn.Shit, "Из них через VPN", "МБ/с") })
         {
             set.Controls.Add(Zk(c.Item1, sx, 46, 11f));
             set.Controls.Add(Np(c.Item2, sx + 22, 44, true));
@@ -217,9 +218,9 @@ partial class Okno
                 set.Controls.Add(new Nadpis { Text = t.Item1, Location = new Point(16, y0) });
                 var u = new Uroven { Location = new Point(240, y0 + 7), Size = new Size(W - 520, 9), Dolya = t.Item2 / mx };
                 set.Controls.Add(u);
-                set.Controls.Add(new Nadpis { Text = t.Item2 > 0 ? t.Item2.ToString("0") + " Мбит/с" + (t.Item3 != "" ? " · отклик " + t.Item3 + " мс" : "") : "не прошло", Location = new Point(W - 270, y0), Tag = t.Item2 >= 50 ? (object)Zel : t.Item2 > 0 ? (object)Zhelt : (object)Kras });
+                set.Controls.Add(new Nadpis { Text = t.Item2 > 0 ? MBsIzMbit(t.Item2) + (t.Item3 != "" ? " · отклик " + t.Item3 + " мс" : "") : "не прошло", Location = new Point(W - 270, y0), Tag = t.Item2 >= 50 ? (object)Zel : t.Item2 > 0 ? (object)Zhelt : (object)Kras });
             }
-            set.Controls.Add(Np(mv >= 50 && mp >= 50 ? "Обе дороги быстрые — всё в порядке." : mv < 50 && mp >= 50 ? "VPN медленнее 50 Мбит/с — попробуйте «Лучший сервер»." : mp < 50 && mv >= 50 ? "Напрямую медленно — похоже на провайдера или zapret." : "Медленно везде — похоже на провайдера или Wi-Fi.", 16, y0 + 32, true, W - 40));
+            set.Controls.Add(Np(mv >= 50 && mp >= 50 ? "Обе дороги быстрые — всё в порядке." : mv < 50 && mp >= 50 ? "VPN медленнее 6 МБ/с — попробуйте «Лучший сервер»." : mp < 50 && mv >= 50 ? "Напрямую медленно — похоже на провайдера или zapret." : "Медленно везде — похоже на провайдера или Wi-Fi.", 16, y0 + 32, true, W - 40));
         }
         k.Controls.Add(set);
         PokazatSet();
@@ -231,6 +232,10 @@ partial class Okno
         if (igra.Count > 0) k.Controls.Add(Tx("Сейчас идёт: " + string.Join(", ", igra) + ". Karing перезапускаю только после этого (звонок — не дольше " + Pult.S(Pult.D(sost["nastroyki"]), "zvonok_min") + " мин).", true));
         return k;
     }
+
+    // скорость: всё в мегабайтах в секунду (1 МБ/с = 8 Мбит/с)
+    static string MBs(double mbayt) { return mbayt <= 0 ? "0 МБ/с" : mbayt < 0.01 ? "< 0,01 МБ/с" : mbayt < 10 ? mbayt.ToString("0.00") + " МБ/с" : mbayt.ToString("0.0") + " МБ/с"; }
+    static string MBsIzMbit(double mbit) { return MBs(mbit / 8); }
 
     static string Hm(string dt) { return dt.Length >= 5 ? dt.Substring(dt.Length - 5) : dt; }
 
@@ -257,33 +262,47 @@ partial class Okno
     }
 
     // одна строка программы: значок, имя, куда идёт, полоса скорости; в «Программах» ещё и выбор
+    // одна строка программы. Колонки одинаковые для всех строк: имя | куда | полоса | скорость | выбор
     void StrokaProgrammy(Kartochka kar, Dictionary<string, object> p, int W, int y, bool sVyborom, bool pravilo = false)
     {
         string exe = Pult.S(p, "exe");
         bool cherezKaring = Pult.B(p, "karing");
         int rowH = sVyborom ? 54 : 40;
+        int cKuda = sVyborom ? 46 : 190, cPolosa = sVyborom ? 300 : 430, cSkor, cVybor = W - 336;
+        int shirPolosy = sVyborom ? Math.Max(60, cVybor - 120 - cPolosa) : Math.Max(60, W - 140 - cPolosa);
+        cSkor = cPolosa + shirPolosy + 10;
         kar.Controls.Add(Zk(Znachok(exe), 16, y + (rowH - 22) / 2, 12f));
         kar.Controls.Add(new Nadpis { Text = Imya(exe), Location = new Point(46, sVyborom ? y + 8 : y + 10) });
         string kudaT = Pult.Chisto(Pult.S(p, "seychas"));
-        if (kudaT == "мимо Karing" && sVyborom) kudaT = "мимо Karing — напрямую, правило на неё не действует";
-        var kuda = Np(kudaT, sVyborom ? 46 : 190, sVyborom ? y + 28 : y + 10, true, sVyborom ? 330 : 230);
+        var kuda = Np(kudaT, cKuda, sVyborom ? y + 28 : y + 10, true, sVyborom ? cPolosa - cKuda - 10 : cPolosa - cKuda - 10);
+        kuda.AutoSize = false; kuda.AutoEllipsis = true; kuda.Size = new Size((sVyborom ? cPolosa : cPolosa) - cKuda - 10, 20);
         kar.Controls.Add(kuda);
-        if (!sVyborom || cherezKaring)
-        {
-            int ux = sVyborom ? 390 : 430, uw = sVyborom ? W - ux - 470 : W - ux - 130;
-            var u = new Uroven { Location = new Point(ux, y + rowH / 2 - 3), Size = new Size(Math.Max(40, uw), 7) };
-            kar.Controls.Add(u);
-            var mb = Np("—", ux + Math.Max(40, uw) + 8, y + rowH / 2 - 9, true);
-            kar.Controls.Add(mb);
-            zhivye[exe] = Tuple.Create(mb, u, kuda);
-        }
+        var u = new Uroven { Location = new Point(cPolosa, y + rowH / 2 - 3), Size = new Size(shirPolosy, 7) };
+        kar.Controls.Add(u);
+        var mb = Np(cherezKaring ? "…" : "не видно", cSkor, y + rowH / 2 - 9, true);
+        kar.Controls.Add(mb);
+        if (cherezKaring) zhivye[exe] = Tuple.Create(mb, u, kuda);
+        else new ToolTip().SetToolTip(mb, "Программа ходит мимо Karing — её скорость отдельно не видна. Общая нагрузка — в «Сеть сейчас» на Мониторе.");
         if (!sVyborom) return;
         bool claude = exe.Equals("claude.exe", StringComparison.OrdinalIgnoreCase) && Pult.S(sost, "claude") != "как всё остальное";
-        if (claude) { kar.Controls.Add(new Nadpis { Text = "закреплён: " + Pult.Chisto(Pult.S(sost, "claude")), Location = new Point(W - 330, y + 16), Tag = "vt" }); return; }
+        if (claude)
+        {
+            var z = new Kartochka { Location = new Point(cVybor, y + 11), Size = new Size(300, 32), Ottenok = Ris.Smes(pal.Poverhnost, pal.Akcent, 0.18) };
+            z.Controls.Add(new Nadpis { Text = "закреплён: " + Pult.Chisto(Pult.S(sost, "claude")), Location = new Point(12, 7) });
+            kar.Controls.Add(z);
+            return;
+        }
+        if (!cherezKaring)
+        {
+            var z = new Kartochka { Location = new Point(cVybor, y + 11), Size = new Size(300, 32) };
+            z.Controls.Add(new Nadpis { Text = "мимо Karing — правило не подействует", Location = new Point(12, 7), Tag = "vt" });
+            kar.Controls.Add(z);
+            return;
+        }
         string m = izmeneniya.ContainsKey(exe) ? izmeneniya[exe] : Pult.S(p, "marshrut");
         if (m == "") m = "avto";
         var seg = new Segmenty { Punkty = new[] { "Авто", m != "avto" && m != "vpn" && m != "direct" && m != "block" ? "VPN: " + Pult.Chisto(m) : "VPN", "Напрямую", "Без сети" },
-            Location = new Point(W - (pravilo ? 420 : 316), y + 11), Size = new Size(300, 32) };
+            Location = new Point(pravilo ? cVybor - 104 : cVybor, y + 11), Size = new Size(300, 32) };
         seg.Vybran = m == "avto" ? 0 : m == "direct" ? 2 : m == "block" ? 3 : 1;
         string tek = m;
         seg.Smena += i => { izmeneniya[exe] = i == 0 ? "avto" : i == 1 ? (tek != "avto" && tek != "direct" && tek != "block" ? tek : "vpn") : i == 2 ? "direct" : "block"; ZaplanirovatMarshruty(); };
@@ -333,7 +352,7 @@ partial class Okno
         ko.Controls.Add(Zg("Сейчас в сети", 16, 12));
         ko.Controls.Add(Np("все программы с соединениями, скорость каждые 5 с", 130, 15, true));
         y = 44;
-        foreach (var p in ostalnye) { StrokaProgrammy(ko, p, W, y, Pult.B(p, "karing")); y += 54; }
+        foreach (var p in ostalnye) { StrokaProgrammy(ko, p, W, y, true); y += 54; }
         if (ostalnye.Count == 0) ko.Controls.Add(Np("Других программ в сети сейчас нет.", 16, 48, true));
         k.Controls.Add(ko);
         k.Controls.Add(Tx("Авто — заблокированное в России идёт через VPN, остальное напрямую. «Без сети» — программа не выйдет в интернет. «Мимо Karing» — программа (часто игры и Steam-загрузки) не пользуется прокси, и правило на неё не подействует. Изменение применяется само через пару секунд, интернет моргнёт один раз.", true));
@@ -517,8 +536,9 @@ partial class Okno
                 kar.Controls.Add(pr);
                 new ToolTip().SetToolTip(pr, string.Join(Environment.NewLine, prich));
             }
-            kar.Controls.Add(new Nadpis { Text = sk.ToString(), Font = new Font("Segoe UI Semibold", 20f), Location = new Point(12, 36) });
-            kar.Controls.Add(Np("Мбит/с", 18 + TextRenderer.MeasureText(sk.ToString(), new Font("Segoe UI Semibold", 20f)).Width, 52, true));
+            string skT = (sk / 8.0).ToString(sk < 80 ? "0.0" : "0");
+            kar.Controls.Add(new Nadpis { Text = skT, Font = new Font("Segoe UI Semibold", 20f), Location = new Point(12, 36) });
+            kar.Controls.Add(Np("МБ/с", 18 + TextRenderer.MeasureText(skT, new Font("Segoe UI Semibold", 20f)).Width, 52, true));
             kar.Controls.Add(Np("пинг " + ping + (nd != null ? " · обрывов за сутки " + nd[0] : ""), 14, 78, true));
             if (nd != null)
             {
@@ -550,7 +570,9 @@ partial class Okno
         var top = new Kartochka { Width = W, Height = 64, Margin = new Padding(0, 0, 0, 12) };
         top.Controls.Add(new Krug { Size = new Size(34, 34), Location = new Point(14, 15), Cvet = rab ? Zel : Kras, Galka = rab });
         top.Controls.Add(Zg(rab ? "Работает · стратегия " + Pult.S(sost, "strategiya") : "Не работает", 60, 10, 12f));
-        top.Controls.Add(Np(zapData == null ? "проверяю…" : "версия " + Pult.S(zapData, "versiya"), 62, 36, true));
+        string vText = zapData == null ? "проверяю…" : "версия " + Pult.S(zapData, "versiya") +
+            (Pult.S(zapData, "posledn") == "" ? " · последнюю на GitHub узнать не удалось" : Sravnit(Pult.S(zapData, "posledn"), Pult.S(zapData, "versiya")) > 0 ? " · есть новее: " + Pult.S(zapData, "posledn") : " · последняя, обновлять не нужно");
+        top.Controls.Add(Np(vText, 62, 36, true));
         var kp = KnZ("Проверить", Zn.Obnovit, () => { zapData = null; Perestroit(); }, false, 150);
         kp.Location = new Point(W - 166, 14); kp.Margin = Padding.Empty; top.Controls.Add(kp);
         k.Controls.Add(top);
@@ -591,7 +613,10 @@ partial class Okno
         var dey = new Kartochka { Width = W, Height = hodFayl != null ? 290 : 110, Margin = new Padding(0, 0, 0, 12) };
         var b1 = KnZ("Подобрать лучшую стратегию", Zn.Molniya, PodobratZapret, true, 290);
         var b2 = KnZ("Быстрее YouTube", "\uE714", () => ZapustitSkript("zapret: быстрее YouTube", "zapret-youtube.ps1", "zapret-youtube.log", "Идёт несколько минут. YouTube и сайты без VPN будут прерываться. Начать?"), false, 200);
-        var b3 = KnZ("Обновить zapret", "\uE896", ObnovitZapret, false, 200);
+        string ver = Pult.S(zapData, "versiya"), posl = Pult.S(zapData, "posledn");
+        bool estNovee = zapData != null && posl != "" && ver != "" && Sravnit(posl, ver) > 0;
+        var b3 = KnZ(estNovee ? "Обновить до " + posl : "Обновить zapret", "\uE896", ObnovitZapret, estNovee, 200);
+        b3.Visible = estNovee || (zapData != null && posl == "");
         b1.Location = new Point(14, 14); b2.Location = new Point(316, 14); b3.Location = new Point(528, 14);
         foreach (var bb in new[] { b1, b2, b3 }) { bb.Margin = Padding.Empty; dey.Controls.Add(bb); }
         dey.Controls.Add(Np("Подбор идёт около 10 минут, всё это время интернет без VPN рвётся. Ход — здесь же, строками.", 16, 64, true, W - 32));
@@ -603,6 +628,14 @@ partial class Okno
         }
         k.Controls.Add(dey);
         return k;
+    }
+
+    static int Sravnit(string a, string b)
+    {
+        Version x, y;
+        if (!Version.TryParse(new string(a.Where(c => char.IsDigit(c) || c == '.').ToArray()), out x)) return 0;
+        if (!Version.TryParse(new string(b.Where(c => char.IsDigit(c) || c == '.').ToArray()), out y)) return 0;
+        return x.CompareTo(y);
     }
 
     void PodobratZapret() { ZapustitSkript("подбор стратегии zapret", "zapret-avto.ps1", "zapret-avto.log", "Подбор идёт около 10 минут. Всё это время интернет без VPN будет рвать. Начать?"); }
