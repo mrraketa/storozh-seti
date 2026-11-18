@@ -175,13 +175,23 @@ def programmy():
             a["soed"] += 1
     except Exception as e:
         log(f"программы: {e!r}")
+    cherez = set(agg)
+    try:
+        vse = programmy_vse()
+    except Exception as e:
+        vse = {}; log(f"netstat: {e!r}")
+    for exe in vse:
+        agg.setdefault(exe, {"exe": exe, "kuda": set(), "kb": 0, "soed": 0})
     for exe in nas:
         agg.setdefault(exe, {"exe": exe, "kuda": set(), "kb": 0, "soed": 0})
     spisok = []
-    for a in sorted(agg.values(), key=lambda x: -x["kb"]):
+    for a in sorted(agg.values(), key=lambda x: (-x["kb"], x["exe"].lower())):
         kuda = sorted(a["kuda"])
-        spisok.append({"exe": a["exe"], "seychas": ", ".join("напрямую" if k == "direct_out" else k for k in kuda) or "—",
-                       "kb": a["kb"], "marshrut": nas.get(a["exe"], "avto")})
+        e = a["exe"]
+        spisok.append({"exe": e, "seychas": ", ".join("напрямую" if k == "direct_out" else k for k in kuda) if kuda else
+                       ("мимо Karing" if e in vse else "сейчас не в сети"),
+                       "kb": a["kb"], "marshrut": nas.get(e, "avto"), "pravilo": e in nas,
+                       "karing": e in cherez, "v_seti": e in vse or e in cherez})
     out({"programmy": spisok, "servery": serv_list()})
 
 
@@ -195,7 +205,7 @@ def serv_list():
 def servery():
     st = s.load_json(s.STATE, {})
     out({"zamer": st.get("speed_test") or {}, "servery": serv_list(), "seychas": s.fast_current(),
-         "vybor": st.get("fast_server"), "claude": s.CLAUDE_PIN or "как всё остальное"})
+         "vybor": st.get("fast_server"), "claude": s.CLAUDE_PIN or "как всё остальное", "podrobno": servery_podrobno()})
 
 
 def nastroyki_zadat(js):
@@ -281,6 +291,129 @@ def proverka():
     s.main()
     log("проверка по кнопке")
     out({"ok": True, "otchet": tail(s.REPORT, 8)})
+
+
+def _oem(args):
+    """Вывод консольных утилит Windows — в кодировке OEM (cp866), а не UTF-8."""
+    try:
+        return subprocess.run(args, capture_output=True, timeout=30, creationflags=0x08000000).stdout.decode("cp866", "replace")
+    except Exception:
+        return ""
+
+
+class _R:
+    def __init__(self, t): self.stdout = t
+
+
+def _netstat_bayty():
+    r = _R(_oem(["netstat", "-e"]))
+    for x in (r.stdout.splitlines() if r else []):
+        ch = re.findall(r"\d+", x)
+        if len(ch) == 2 and re.match(r"\s*(Bytes|Байт)", x):
+            return int(ch[0]), int(ch[1])
+    return None
+
+
+def set_seychas():
+    """Сколько качает весь компьютер сейчас (сетевая карта, 2 с) и сколько из этого идёт через VPN (Karing)."""
+    def vpn_snap():
+        v = 0
+        try:
+            for c in clash("/connections").get("connections", []):
+                if (c.get("chains") or ["direct_out"])[0] not in ("direct_out", "block_out"):
+                    v += c.get("download", 0) + c.get("upload", 0)
+        except Exception:
+            pass
+        return v
+    a, va = _netstat_bayty(), vpn_snap()
+    time.sleep(2)
+    b, vb = _netstat_bayty(), vpn_snap()
+    if not a or not b:
+        out({"ok": False, "info": "netstat не ответил"}); return
+    vniz = max(0, (b[0] - a[0]) % (1 << 32)) * 8 / 2 / 1e6
+    vverh = max(0, (b[1] - a[1]) % (1 << 32)) * 8 / 2 / 1e6
+    out({"ok": True, "vniz": round(vniz, 2), "vverh": round(vverh, 2), "vpn": round(max(0, vb - va) * 8 / 2 / 1e6, 2)})
+
+
+def test_seti():
+    """Тест скорости: 25 МБ с Cloudflare через VPN и напрямую, плюс задержка. Кнопку нажимает человек."""
+    url = "https://speed.cloudflare.com/__down?bytes=25000000"
+    def zamer(prox):
+        a = ["curl.exe", "-s", "-o", "NUL", "-m", "25", "-w", "%{http_code} %{speed_download} %{time_connect}"]
+        a += (["-x", prox] if prox else ["--noproxy", "*"]) + [url]
+        r = s.run(a, timeout=35)
+        p = (r.stdout.split() if r else [])
+        if len(p) == 3 and p[0] == "200":
+            return {"mbit": round(float(p[1]) * 8 / 1e6, 1), "ping": round(float(p[2]) * 1000)}
+        return {"mbit": 0, "ping": None}
+    vpn = zamer(s.VPN)
+    pryamo = zamer(None)
+    st = s.load_json(s.STATE, {})
+    ist = st.get("test_seti", [])[-19:]
+    ist.append([datetime.now().strftime("%d.%m %H:%M"), vpn["mbit"], pryamo["mbit"]])
+    st["test_seti"] = ist
+    s.save_json(s.STATE, st)
+    log(f"тест сети: VPN {vpn}, напрямую {pryamo}")
+    out({"ok": True, "vpn": vpn, "pryamo": pryamo, "server": s.fast_current(), "istoriya": ist})
+
+
+def programmy_vse():
+    """Все программы с открытыми соединениями (netstat), а не только те, что идут через Karing."""
+    r = _R(_oem(["netstat", "-ano", "-p", "tcp"]))
+    pidy = {}
+    for x in (r.stdout.splitlines() if r else []):
+        p = x.split()
+        if len(p) == 5 and p[3] in ("ESTABLISHED", "УСТАНОВЛЕНО") and not p[2].startswith(("127.", "[::1]")):
+            pidy[p[4]] = pidy.get(p[4], 0) + 1
+    t = _R(_oem(["tasklist", "/fo", "csv", "/nh"]))
+    imena = {}
+    for x in (t.stdout.splitlines() if t else []):
+        m = re.match(r'"([^"]+)","(\d+)"', x)
+        if m:
+            imena[m[2]] = m[1]
+    vse = {}
+    for pid, n in pidy.items():
+        exe = imena.get(pid)
+        if exe and exe.lower() not in ("system", "svchost.exe", "karing.exe", "karingservice.exe", "lsass.exe", "services.exe"):
+            vse[exe] = vse.get(exe, 0) + n
+    return vse
+
+
+def servery_podrobno():
+    """Для каждого сервера — вердикт простыми словами: работает / не работает / нестабильный / адрес меняется / медленный."""
+    st = s.load_json(s.STATE, {})
+    res = (st.get("speed_test") or {}).get("results", [])
+    try:
+        sc = s.server_scores(24)
+    except Exception:
+        sc = {}
+    zhivye = set(s.candidates() or [])
+    itog = {}
+    for r in res:
+        imya, sk, ping, adr = r[0], r[1], r[2], r[3]
+        obr, minut = (sc.get(imya) or (0, 0, 0))[:2]
+        prichiny = []
+        if sk < 5 or (zhivye and imya not in zhivye):
+            vid, slovo = "plohoy", "Не работает"
+            prichiny.append("скорость почти ноль" if sk < 5 else "сейчас не отвечает")
+        else:
+            vid, slovo = "horoshiy", "Хороший"
+            if adr > 1:
+                vid, slovo = "nado_znat", "Адрес меняется"
+                prichiny.append(f"за замер сменил {adr} адреса — сайты могут выкидывать из аккаунтов")
+            if obr >= 20 or minut >= 20:
+                vid, slovo = "plohoy" if obr >= 40 else "nado_znat", "Нестабильный"
+                prichiny.append(f"за сутки обрывался {obr} раз, без ответа {minut} мин")
+            if sk < 50:
+                if vid == "horoshiy":
+                    vid, slovo = "nado_znat", "Медленный"
+                prichiny.append(f"скорость {sk} Мбит/с — ниже 50")
+            if ping and ping > 150:
+                prichiny.append(f"пинг {ping} мс — для игр и звонков много")
+        if not prichiny:
+            prichiny.append(f"{sk} Мбит/с, пинг {ping} мс, обрывов за сутки {obr}")
+        itog[imya] = {"vid": vid, "slovo": slovo, "prichiny": prichiny, "obryvov": obr, "minut": minut}
+    return itog
 
 
 ZADANIYA = [("Storozh seti", "storozh.py", 10), ("Storozh VPN", "storozh.py --vpn", 2), ("Nablyudatel migany", "nablyudatel.py", 15)]
@@ -460,7 +593,8 @@ if __name__ == "__main__":
          "nastroyki-zadat": lambda: nastroyki_zadat(a[1]), "primenit-marshruty": primenit_marshruty,
          "sayt": lambda: sayt(a[1], a[2]), "server": lambda: server(a[1]),
          "zamer": zamer, "proverka": proverka, "skorosti": skorosti, "proverit-sayt": lambda: proverit_sayt(a[1]),
-         "sayty-istoriya": sayty_istoriya, "vernut": lambda: vernut(a[1]), "zapret": zapret_sost, "lenta": lenta, "ustanovit-zadaniya": ustanovit_zadaniya}[a[0]]()
+         "sayty-istoriya": sayty_istoriya, "vernut": lambda: vernut(a[1]), "zapret": zapret_sost, "lenta": lenta, "ustanovit-zadaniya": ustanovit_zadaniya,
+         "set-seychas": set_seychas, "test-seti": test_seti}[a[0]]()
     except Exception as e:
         log(f"ошибка {a}: {e!r}")
         out({"ok": False, "info": f"ошибка: {e}"})

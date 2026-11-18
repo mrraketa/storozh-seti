@@ -387,12 +387,14 @@ partial class Okno : Form
         using (var o = new Okno(false))
         {
             o.ShowInTaskbar = false; o.StartPosition = FormStartPosition.Manual; o.Location = new Point(-20000, -20000);
-            o.Size = new Size(1078, 694);
+            o.Size = new Size(1078, Environment.GetEnvironmentVariable("STOROZH_VYS") != null ? int.Parse(Environment.GetEnvironmentVariable("STOROZH_VYS")) : 694);
             o.sost = Pult.Vyzov("sostoyanie");
             o.progData = Pult.Vyzov("programmy");
             o.servData = Pult.Vyzov("servery");
             o.zapData = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>("{\"youtube\":[\"204\",0.12,true],\"golos\":{\"est\":true,\"poteri\":8.8,\"ping\":71},\"versiya\":\"1.10.4 (пример)\"}");   // снимки: без прямых запросов
             o.saytyIst = Pult.Vyzov("sayty-istoriya"); o.lentaData = Pult.Vyzov("lenta");
+            o.testData = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>("{\"ok\":true,\"vpn\":{\"mbit\":96,\"ping\":112},\"pryamo\":{\"mbit\":410,\"ping\":9},\"server\":\"Литва (пример)\"}");
+            o.setData = Pult.Vyzov("set-seychas");
             o.skorData = Pult.Vyzov("skorosti");
             o.Show(); o.Location = new Point(-20000, -20000);
             foreach (var temy in new[] { "svoya", "svetloe" })
