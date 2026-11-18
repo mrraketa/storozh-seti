@@ -118,10 +118,12 @@ partial class Okno
 
         // состояние одной строкой + кнопки
         Color cv = !est ? pal.Liniya : bedy.Count == 0 ? Zel : (Pult.B(sost, "karing") ? Zhelt : Kras);
-        var top = new Kartochka { Width = W, Height = 64, Margin = new Padding(0, 0, 0, 12), Ottenok = Ris.Smes(pal.Poverhnost, cv, pal.Temnaya ? 0.16 : 0.10) };
+        string podp = est ? "Claude через " + Pult.S(sost, "claude") + "  ·  zapret " + (Pult.B(sost, "zapret") ? "включён" : "НЕ работает") + "  ·  проверено в " + Hm(Pult.S(sost, "posledniy")) : "";
+        int podpH = TextRenderer.MeasureText(podp, Font, new Size(W - 420, 1000), TextFormatFlags.WordBreak).Height;
+        var top = new Kartochka { Width = W, Height = Math.Max(64, 40 + podpH + 8), Margin = new Padding(0, 0, 0, 12), Ottenok = Ris.Smes(pal.Poverhnost, cv, pal.Temnaya ? 0.16 : 0.10) };
         top.Controls.Add(new Krug { Size = new Size(36, 36), Location = new Point(14, 14), Cvet = cv, Galka = bedy.Count == 0 });
         top.Controls.Add(Zg(!est ? "Смотрю…" : bedy.Count == 0 ? "Всё работает" : "Есть что поправить", 62, 10, 13f));
-        if (est) top.Controls.Add(Np("Claude через " + Pult.S(sost, "claude") + "  ·  zapret " + (Pult.B(sost, "zapret") ? "включён" : "НЕ работает") + "  ·  проверено в " + Hm(Pult.S(sost, "posledniy")), 64, 36, true, W - 420));
+        if (est) top.Controls.Add(Np(podp, 64, 36, true, W - 420));
         var k1 = KnZ("Проверить", Zn.Obnovit, () => Deystvie("проверка сети", new[] { "proverka" }, null), true, 150);
         var k2 = KnZ("Лучший сервер", Zn.Skorost, NaytiLuchshiy, false, 180);
         k1.Location = new Point(W - 346, 13); k2.Location = new Point(W - 192, 13); k1.Margin = k2.Margin = Padding.Empty;
@@ -145,7 +147,9 @@ partial class Okno
         if (!est) return k;
 
         // спидометр + сутки
-        var ryad = new Panel { Width = W, Height = 220, Margin = new Padding(0, 0, 0, 12) };
+        bool uzko = W < 820;
+        int suW = uzko ? W : W - 242;
+        var ryad = new Panel { Width = W, Height = uzko ? 452 : 220, Margin = new Padding(0, 0, 0, 12) };
         var sp = new Kartochka { Width = 230, Height = 220, Location = new Point(0, 0) };
         double skor = 0; double.TryParse(Pult.S(sost, "skorost"), out skor);
         var vyb = Spiski(st, "vybory");
@@ -156,10 +160,11 @@ partial class Okno
         if (obychno > 0) sp.Controls.Add(Np("обычно у тебя ~" + (obychno / 8).ToString("0") + " МБ/с", 16, 182, true, 200));
         ryad.Controls.Add(sp);
 
-        var su = new Kartochka { Width = W - 242, Height = 220, Location = new Point(242, 0) };
+        if (uzko) sp.Width = W;
+        var su = new Kartochka { Width = suW, Height = 220, Location = uzko ? new Point(0, 232) : new Point(242, 0) };
         su.Controls.Add(Zg("Последние сутки", 16, 12));
-        su.Controls.Add(Np("цвет — как работал VPN в этот час, наведите — подробности", 150, 15, true));
-        var ps = new PolosaSutok { Location = new Point(16, 46), Size = new Size(W - 274, 54) };
+        su.Controls.Add(Np("цвет — как работал VPN в этот час, наведите — подробности", 150, 15, true, suW - 166));
+        var ps = new PolosaSutok { Location = new Point(16, 46), Size = new Size(suW - 32, 54) };
         var chasy = Spiski(st, "chasy");
         for (int h = 0; h < 24 && h < chasy.Count; h++) { ps.Obryvy[h] = Convert.ToInt32(chasy[h][0]); ps.Sekund[h] = Convert.ToInt32(chasy[h][1]); }
         su.Controls.Add(ps);
@@ -167,16 +172,17 @@ partial class Okno
         foreach (var l in new[] { Tuple.Create(PolosaSutok.Zel, "без обрывов"), Tuple.Create(PolosaSutok.Zhel, "1–2 обрыва"), Tuple.Create(PolosaSutok.Kras, "3 и больше или дольше минуты") })
         {
             su.Controls.Add(new Nadpis { Text = "●", ForeColor = l.Item1, Tag = l.Item1, Location = new Point(lx, 108) });
-            var t = Np(l.Item2, lx + 14, 108, true); su.Controls.Add(t);
+            var t = Np(l.Item2, lx + 14, 108, true, suW - lx - 30); su.Controls.Add(t);
             lx += 22 + TextRenderer.MeasureText(l.Item2, Font).Width + 14;
+            if (lx > suW - 120) break;
         }
-        int x = 16;
+        int x = 16, shag = (suW - 32) / 3;
         foreach (var c in new[] { Tuple.Create("обрывов", Pult.S(sost, "miganiya")), Tuple.Create("без VPN всего", Vremya(Convert.ToInt32(Pult.S(st, "bez_vpn") == "" ? "0" : Pult.S(st, "bez_vpn")))),
                                   Tuple.Create("самый длинный", Vremya(Convert.ToInt32(Pult.S(st, "samyy_dlinnyy") == "" ? "0" : Pult.S(st, "samyy_dlinnyy")))) })
         {
             su.Controls.Add(Np(c.Item1, x, 142, true));
             su.Controls.Add(new Nadpis { Text = c.Item2, Font = new Font("Segoe UI Semibold", 15f), Location = new Point(x - 2, 162) });
-            x += 190;
+            x += shag;
         }
         ryad.Controls.Add(su);
         k.Controls.Add(ryad);
@@ -342,7 +348,7 @@ partial class Okno
 
         var kp = new Kartochka { Width = W, Height = 76 + Math.Max(1, pravila.Count) * 54, Margin = new Padding(0, 0, 0, 12) };
         kp.Controls.Add(Zg("Ваши правила", 16, 12));
-        kp.Controls.Add(Np("эти программы идут так, как вы выбрали. «Убрать» — снова решает сторож.", 128, 15, true));
+        kp.Controls.Add(Np("эти программы идут так, как вы выбрали. «Убрать» — снова решает сторож.", 128, 15, true, W - 144));
         int y = 44;
         if (pravila.Count == 0) { kp.Controls.Add(Np("Правил пока нет. Выберите способ у программы ниже — она переедет сюда.", 16, 48, true)); }
         foreach (var p in pravila) { StrokaProgrammy(kp, p, W, y, true, true); y += 54; }
@@ -418,7 +424,8 @@ partial class Okno
     {
         var k = Kolonka(); int W = Shir;
         k.Controls.Add(Shapka("Сайты", "", null));
-        var obyas = new Kartochka { Width = W, Height = 78, Margin = new Padding(0, 0, 0, 12) };
+        string obT = "Заблокированные в России — через VPN (списки обновляются сами), остальные — напрямую. Сайт не открывается или тормозит? Впишите его ниже: сторож проверит обе дороги и подскажет.";
+        var obyas = new Kartochka { Width = W, Height = 44 + TextRenderer.MeasureText(obT, Font, new Size(W - 70, 1000), TextFormatFlags.WordBreak).Height, Margin = new Padding(0, 0, 0, 12) };
         obyas.Controls.Add(Zk(Zn.Globus, 16, 16, 13f));
         obyas.Controls.Add(new Nadpis { Text = "Как идут сайты", Font = new Font("Segoe UI Semibold", 11f), Location = new Point(46, 12) });
         obyas.Controls.Add(Np("Заблокированные в России — через VPN (списки обновляются сами), остальные — напрямую. Сайт не открывается или тормозит? Впишите его ниже: сторож проверит обе дороги и подскажет.", 46, 34, true, W - 70));
@@ -473,7 +480,7 @@ partial class Okno
         var ist = Pult.L(saytyIst, "sayty").Select(Pult.D).Take(12).ToList();
         var ki = new Kartochka { Width = W, Height = 48 + Math.Max(1, ist.Count) * 42, Margin = new Padding(0, 0, 0, 12) };
         ki.Controls.Add(Zg("Что сторож поменял сам", 16, 12));
-        ki.Controls.Add(Np("«Отменить» — сайт снова пойдёт по спискам, как до правки", 200, 15, true));
+        ki.Controls.Add(Np("«Отменить» — сайт снова пойдёт по спискам, как до правки", 220, 15, true, W - 236));
         int y = 44;
         foreach (var s in ist)
         {
@@ -482,7 +489,7 @@ partial class Okno
             pill.Controls.Add(new Nadpis { Text = vpn ? "в VPN" : "напрямую", Location = new Point(10, 3) });
             ki.Controls.Add(pill);
             ki.Controls.Add(new Nadpis { Text = Pult.S(s, "domen"), Location = new Point(114, y + 10) });
-            ki.Controls.Add(Np((vpn ? "пущен через VPN — напрямую не открывался" : "пущен напрямую — через VPN отказывал") + " · " + Pult.S(s, "kogda"), 300, y + 10, true, W - 430));
+            ki.Controls.Add(Np((vpn ? "пущен через VPN — напрямую не открывался" : "пущен напрямую — через VPN отказывал") + " · " + Pult.S(s, "kogda"), 300, y + 10, true, W - 430)); { var posl = (Nadpis)ki.Controls[ki.Controls.Count - 1]; posl.AutoSize = false; posl.AutoEllipsis = true; posl.Size = new Size(W - 430, 20); }
             string dom = Pult.S(s, "domen");
             var kv = Kn("Отменить", () => { if (Sprosit("Отменить правку для " + dom + "? Сайт снова пойдёт по спискам, как до неё. Karing перезапустится.")) Deystvie("отмена правки " + dom, new[] { "vernut", dom }, d => saytyIst = null); }, false, 100);
             kv.Height = 30; kv.Location = new Point(W - 116, y + 4); kv.Margin = Padding.Empty; ki.Controls.Add(kv);
@@ -512,7 +519,7 @@ partial class Okno
         string seychas = Pult.S(servData, "seychas"), claude = Pult.S(servData, "claude");
         var nad = Pult.D(Pult.D(sost != null && sost.ContainsKey("stat") ? sost["stat"] : null).ContainsKey("nadezhnost") ? Pult.D(sost["stat"])["nadezhnost"] : null);
         var setka = new FlowLayoutPanel { Width = W + 12, AutoSize = true, WrapContents = true, Margin = new Padding(0) };
-        int cw = (W - 24) / 3;
+        int kol = W < 820 ? 2 : 3, cw = (W - 12 * (kol - 1)) / kol;
         foreach (var r in Spiski(zamer, "results"))
         {
             string imya = Convert.ToString(r[0]);
@@ -539,7 +546,7 @@ partial class Okno
             string skT = (sk / 8.0).ToString(sk < 80 ? "0.0" : "0");
             kar.Controls.Add(new Nadpis { Text = skT, Font = new Font("Segoe UI Semibold", 20f), Location = new Point(12, 36) });
             kar.Controls.Add(Np("МБ/с", 18 + TextRenderer.MeasureText(skT, new Font("Segoe UI Semibold", 20f)).Width, 52, true));
-            kar.Controls.Add(Np("пинг " + ping + (nd != null ? " · обрывов за сутки " + nd[0] : ""), 14, 78, true));
+            kar.Controls.Add(Np("пинг " + ping + (nd != null ? " · обрывов " + nd[0] : ""), 14, 78, true, cw - 28));
             if (nd != null)
             {
                 // полоса: доля часов без обрывов / с обрывами
@@ -617,12 +624,17 @@ partial class Okno
         bool estNovee = zapData != null && posl != "" && ver != "" && Sravnit(posl, ver) > 0;
         var b3 = KnZ(estNovee ? "Обновить до " + posl : "Обновить zapret", "\uE896", ObnovitZapret, estNovee, 200);
         b3.Visible = estNovee || (zapData != null && posl == "");
-        b1.Location = new Point(14, 14); b2.Location = new Point(316, 14); b3.Location = new Point(528, 14);
-        foreach (var bb in new[] { b1, b2, b3 }) { bb.Margin = Padding.Empty; dey.Controls.Add(bb); }
-        dey.Controls.Add(Np("Подбор идёт около 10 минут, всё это время интернет без VPN рвётся. Ход — здесь же, строками.", 16, 64, true, W - 32));
+        var knopkiZ = new FlowLayoutPanel { Location = new Point(14, 14), Size = new Size(W - 28, 90), WrapContents = true, BackColor = Color.Transparent };
+        foreach (var bb in new[] { b1, b2, b3 }) { bb.Margin = new Padding(0, 0, 10, 8); knopkiZ.Controls.Add(bb); }
+        dey.Controls.Add(knopkiZ);
+        int vysKn = knopkiZ.GetPreferredSize(new Size(W - 28, 0)).Height;
+        int ryadov = Math.Max(1, (vysKn + 10) / 46);
+        knopkiZ.Height = ryadov * 46;
+        dey.Height += (ryadov - 1) * 46;
+        dey.Controls.Add(Np("Подбор идёт около 10 минут, всё это время интернет без VPN рвётся. Ход — здесь же, строками.", 16, 14 + ryadov * 46, true, W - 32));
         if (hodFayl != null)
         {
-            hodPole = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None, Location = new Point(16, 92), Size = new Size(W - 32, 184), Font = new Font("Consolas", 9.5f) };
+            hodPole = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None, Location = new Point(16, 46 + ryadov * 46), Size = new Size(W - 32, 184), Font = new Font("Consolas", 9.5f) };
             dey.Controls.Add(hodPole);
             ObnovitHod();
         }

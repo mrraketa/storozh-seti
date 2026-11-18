@@ -30,6 +30,7 @@ static class Programma
         AppDomain.CurrentDomain.UnhandledException += (s, e) => Okno.Zapis("ОШИБКА в фоне: " + e.ExceptionObject);
         int i = Array.IndexOf(args, "--snimki");
         if (i >= 0 && i + 1 < args.Length) { Okno.Snimki(args[i + 1]); return; }
+        if (Array.IndexOf(args, "--samoproverka") >= 0) { try { Environment.ExitCode = Okno.Samoproverka(); } catch (Exception e) { Console.WriteLine("ОШИБКА: " + e); Environment.ExitCode = 99; } return; }
         if (Array.IndexOf(args, "--test-klik") >= 0) { try { Okno.TestKlik(); } catch (Exception e) { Console.WriteLine("ОШИБКА: " + e); } return; }
         bool novaya;
         using (var m = new Mutex(true, "StorozhSetiOkno", out novaya))
@@ -196,6 +197,11 @@ partial class Okno : Form
         }
         Otkryt("glavnaya");
         if (nastoyashchee) Obnovit();
+        // без оболочки окно растягивают руками — разделы перестраиваются под новую ширину (раз, после остановки)
+        int shirBylo = ClientSize.Width;
+        var tRazmer = new System.Windows.Forms.Timer { Interval = 250 };
+        tRazmer.Tick += (s2, e2) => { tRazmer.Stop(); if (Math.Abs(ClientSize.Width - shirBylo) > 16) { shirBylo = ClientSize.Width; Perestroit(); } };
+        Resize += (s2, e2) => { tRazmer.Stop(); tRazmer.Start(); };
     }
 
     // ---------- общее ----------
@@ -250,7 +256,7 @@ partial class Okno : Form
                     SendMessage(k.Handle, 0x201, (IntPtr)1, c); SendMessage(k.Handle, 0x202, IntPtr.Zero, c);
                     Application.DoEvents();
                     if (!k.IsDisposed) k.Click -= h;
-                    Console.WriteLine(s + " | " + k.Text + " | " + (bylo ? "нажалась" : "НЕ НАЖАЛАСЬ"));
+                    Console.WriteLine(s + " | " + k.Text + " | " + (bylo ? "нажалась" : "НЕ НАЖАЛАСЬ [" + k.Bounds + " в " + (k.Parent == null ? "-" : k.Parent.GetType().Name + " " + k.Parent.ClientSize + (k.Parent.Parent == null ? "" : " / " + k.Parent.Parent.ClientSize)) + ", видна " + k.Visible + "]"));
                 }
             }
         }
@@ -385,6 +391,47 @@ partial class Okno : Form
     }
 
     // ---------- проверка вида: все разделы снимками ----------
+    // самопроверка без оболочки: все разделы в трёх размерах окна — падения и элементы, вылезающие за край
+    public static int Samoproverka()
+    {
+        suho = true;
+        int plohih = 0;
+        using (var o = new Okno(false))
+        {
+            o.ShowInTaskbar = false; o.StartPosition = FormStartPosition.Manual; o.Location = new Point(-20000, -20000);
+            o.sost = Pult.Vyzov("sostoyanie"); o.progData = Pult.Vyzov("programmy"); o.servData = Pult.Vyzov("servery");
+            o.zapData = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>("{\"youtube\":[\"204\",0.12,true],\"golos\":{\"est\":true,\"poteri\":8.8,\"ping\":71},\"versiya\":\"1.10.4\",\"posledn\":\"1.10.5\"}");
+            o.saytyIst = Pult.Vyzov("sayty-istoriya"); o.lentaData = Pult.Vyzov("lenta");
+            o.testData = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>("{\"ok\":true,\"vpn\":{\"mbit\":96,\"ping\":112},\"pryamo\":{\"mbit\":410,\"ping\":9},\"server\":\"Литва\"}");
+            o.Show(); o.Location = new Point(-20000, -20000);
+            foreach (var r in new[] { new Size(720, 480), new Size(900, 620), new Size(1078, 694), new Size(1600, 950) })
+            {
+                o.Size = r; Application.DoEvents();
+                foreach (var s in new[] { "glavnaya", "programmy", "sayty", "servery", "zapret", "zhurnal", "nastroyki" })
+                {
+                    try { o.Otkryt(s); Application.DoEvents(); }
+                    catch (Exception e) { Console.WriteLine("ПАДЕНИЕ " + r.Width + "x" + r.Height + " " + s + ": " + e.Message); plohih++; continue; }
+                    foreach (var z in Vylezaet(o.soderzh)) { Console.WriteLine("ВЫЛЕЗАЕТ " + r.Width + "x" + r.Height + " " + s + ": " + z); plohih++; }
+                }
+            }
+        }
+        Console.WriteLine(plohih == 0 ? "ИТОГ: всё в порядке" : "ИТОГ: замечаний " + plohih);
+        return plohih;
+    }
+
+    static IEnumerable<string> Vylezaet(Control r)
+    {
+        foreach (Control c in r.Controls)
+        {
+            if (c.Visible && (r is Kartochka || (r is Panel && !(r is FlowLayoutPanel) && r != null && r.Parent is FlowLayoutPanel)))
+            {
+                if (c.Right > r.ClientSize.Width + 2) yield return c.GetType().Name + " «" + Pult.Chisto(c.Text) + "» правый край " + c.Right + " > " + r.ClientSize.Width;
+                if (c.Bottom > r.ClientSize.Height + 2) yield return c.GetType().Name + " «" + Pult.Chisto(c.Text) + "» нижний край " + c.Bottom + " > " + r.ClientSize.Height;
+            }
+            foreach (var z in Vylezaet(c)) yield return z;
+        }
+    }
+
     public static void Snimki(string papka)
     {
         Directory.CreateDirectory(papka);
