@@ -2,7 +2,7 @@
 
 Программа для Windows, которая следит, чтобы интернет работал: VPN (Karing), обход блокировок (zapret), сайты и программы.
 
-**[Скачать StorozhSeti.zip](https://github.com/mrraketa/storozh-seti/raw/main/StorozhSeti.zip)**
+**[Скачать последнюю версию](https://github.com/mrraketa/storozh-seti/releases/latest/download/StorozhSeti.zip)** · [все версии](https://github.com/mrraketa/storozh-seti/releases)
 
 ## Что нужно заранее
 
