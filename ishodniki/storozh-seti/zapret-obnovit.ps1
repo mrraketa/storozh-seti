@@ -4,7 +4,15 @@
 $ErrorActionPreference = 'Stop'
 $LOG = Join-Path $PSScriptRoot 'zapret-obnovit.log'
 function L($m) { "[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $m | Out-File $LOG -Append -Encoding utf8 }
-$ZAG = Join-Path $env:USERPROFILE 'Downloads'
+function Get-Zagruzki {
+    # папка «Загрузки» — её можно перенести на другой диск, поэтому спрашиваем у Windows
+    $p = $null
+    try { $p = (New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path } catch { }
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) { $p = Join-Path $env:USERPROFILE 'Downloads' }
+    return $p
+}
+$ZAG = Get-Zagruzki
+New-Item -ItemType Directory -Force $ZAG | Out-Null
 L '=== проверяю новую версию zapret'
 try {
     $tek = Get-ChildItem $ZAG -Directory -Filter 'zapret-discord-youtube-*' | Where-Object { Test-Path (Join-Path $_.FullName 'service.bat') } |

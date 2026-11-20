@@ -4,11 +4,31 @@ Karing и оба VPN-сервера (Claude и «скорость»). Пишет
 Ничего не меняет. Журнал: mignaniya.log рядом; итог за сутки — строкой в otchet.txt."""
 import os, re, socket, sys, time
 from datetime import datetime
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # встроенный Python не кладёт папку скрипта в sys.path
 import storozh as s
 
 LOG = os.path.join(s.HERE, "mignaniya.log")
 PERIOD = 3
 DIRECT = [("77.88.55.242", 443), ("87.250.250.242", 443)]   # Яндекс, напрямую мимо Karing
+ROUTER = None   # (адрес, порт) роутера; None — проверить нельзя, считаем, что он есть
+
+
+def nayti_router():
+    """Роутер у всех свой (192.168.0.1, 192.168.1.1, 10.0.0.1 …) — берём основной шлюз Windows и порт, на котором
+    он отвечает. Не отвечает ни на 80, ни на 443 — роутер не проверяем (иначе каждые 5 с «сбой роутера»)."""
+    r = s.run(["route", "print", "-4", "0.0.0.0"])
+    shlyuzy = []   # (метрика, адрес): маршрутов по умолчанию бывает несколько (виртуальные сети) — берём главный
+    for x in (r.stdout.splitlines() if r else []):
+        p = x.split()
+        if len(p) == 5 and p[0] == "0.0.0.0" and p[1] == "0.0.0.0" and re.fullmatch(r"\d+\.\d+\.\d+\.\d+", p[2]) and p[4].isdigit():
+            shlyuzy.append((int(p[4]), p[2]))
+    if shlyuzy:
+        gw = min(shlyuzy)[1]
+        for port in (80, 443):
+            if tcp(gw, port, 1.5):
+                return (gw, port)
+        return None
+    return ("192.168.1.1", 80) if tcp("192.168.1.1", 80, 1.5) else None
 
 
 def tcp(host, port, t=2.0):
@@ -24,12 +44,12 @@ def probe():
     from concurrent.futures import ThreadPoolExecutor
     tags = list(dict.fromkeys(s.role_server(r) for r in ("claude", "fast")))
     with ThreadPoolExecutor(8) as ex:
-        f_router = ex.submit(tcp, "192.168.1.1", 80, 1.5)
+        f_router = ex.submit(tcp, ROUTER[0], ROUTER[1], 1.5) if ROUTER else None
         f_direct = [ex.submit(tcp, h, p) for h, p in DIRECT]
         f_karing = ex.submit(s.port_up)
         f_srv = {t: ex.submit(s.delay, t, 2500) for t in tags}
         karing = f_karing.result()
-        return {"router": f_router.result(), "direct": any(f.result() for f in f_direct), "karing": karing,
+        return {"router": f_router.result() if f_router else True, "direct": any(f.result() for f in f_direct), "karing": karing,
                 "servers": {t: (f.result() is not None) for t, f in f_srv.items()} if karing else {}}
 
 
@@ -106,6 +126,8 @@ def full_scan_loop():
 
 def main():
     import threading
+    global ROUTER
+    ROUTER = nayti_router()
     threading.Thread(target=full_scan_loop, daemon=True).start()
     write(f"[{s.now()}] наблюдатель запущен")
     start, worst, day, counts, nfail = None, None, datetime.now().date(), {}, 0

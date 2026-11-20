@@ -6,9 +6,10 @@
 
 ## Что нужно заранее
 
-1. **Python 3.12+** — [python.org/downloads](https://www.python.org/downloads/), при установке отметить «Add python.exe to PATH».
-2. **Karing** — [karing.app](https://karing.app) и ваша подписка VPN. Режим в Karing — «Правила».
-3. По желанию **zapret** — [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube): YouTube и голос Discord без VPN. Распакуйте в «Загрузки», имя папки не меняйте.
+Python ставить не нужно — он уже внутри архива (папка `python`).
+
+1. **Karing** — [karing.app](https://karing.app) и ваша подписка VPN. Режим в Karing — «Правила».
+2. По желанию **zapret** — [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube): YouTube и голос Discord без VPN. Распакуйте в «Загрузки», имя папки не меняйте.
 
 ## Как запустить
 
@@ -28,3 +29,8 @@
 Claude по умолчанию идёт как всё остальное. Закрепить его за одним сервером: `storozh-seti\nastroyki.json` → `"claude_strana": "имя сервера как в Karing"`.
 
 Всё работает на вашем компьютере, ничего не отправляется наружу. Исходники — в папке `ishodniki`.
+
+## Лицензии
+
+- Значок — Tabler Icons (MIT).
+- Внутри — Python 3.12 (лицензия PSF, `python/LICENSE.txt`).

@@ -81,6 +81,7 @@ class Grafik2 : Control
     readonly List<RectangleF> zony = new List<RectangleF>();
 
     public Grafik2() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true); BackColor = Color.Transparent; }
+    protected override void Dispose(bool d) { if (d) tip.Dispose(); base.Dispose(d); }
 
     Color Glavn { get { return Cvet ?? (Pal.Akcent.GetBrightness() > 0.92 ? Pal.Tekst : Pal.Akcent); } }
     Color Tusk { get { return Ris.Smes(Pal.Poverhnost, Pal.Tekst, 0.22); } }

@@ -35,6 +35,7 @@ class PolosaSutok : Control
     int nav = -1;
     public static readonly Color Zel = Color.FromArgb(47, 163, 94), Zhel = Color.FromArgb(217, 162, 79), Kras = Color.FromArgb(214, 90, 79);
     public PolosaSutok() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true); BackColor = Color.Transparent; }
+    protected override void Dispose(bool d) { if (d) tip.Dispose(); base.Dispose(d); }   // раздел перестраивается раз в минуту — подсказки не копить
     int Chas(int i) { return (TekChas + 1 + i) % 24; }   // слева — сутки назад, справа — текущий час
     Color Cvet(int h) { return Obryvy[h] == 0 ? Zel : (Obryvy[h] >= 3 || Sekund[h] > 60 ? Kras : Zhel); }
     protected override void OnPaint(PaintEventArgs e)

@@ -3,8 +3,15 @@
 # Запускается с правами администратора. Журнал: zapret-avto.log рядом.
 param([string]$Install)
 $ErrorActionPreference = 'Continue'
+function Get-Zagruzki {
+    # папка «Загрузки» — её можно перенести на другой диск, поэтому спрашиваем у Windows
+    $p = $null
+    try { $p = (New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path } catch { }
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) { $p = Join-Path $env:USERPROFILE 'Downloads' }
+    return $p
+}
 # самая новая версия zapret в Загрузках (папка с service.bat)
-$Z = (Get-ChildItem (Join-Path $env:USERPROFILE 'Downloads') -Directory -Filter 'zapret-discord-youtube-*' | Where-Object { Test-Path (Join-Path $_.FullName 'service.bat') } |
+$Z = (Get-ChildItem (Get-Zagruzki) -Directory -Filter 'zapret-discord-youtube-*' | Where-Object { Test-Path (Join-Path $_.FullName 'service.bat') } |
     Sort-Object { [version](($_.Name -replace '^zapret-discord-youtube-', '') -replace '[^0-9.]', '') } | Select-Object -Last 1).FullName
 $LOG = Join-Path $PSScriptRoot 'zapret-avto.log'
 if (-not $Z) {
@@ -64,7 +71,7 @@ function Install($name) {
     $svc = Get-Service zapret -ErrorAction SilentlyContinue
     $reg = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\zapret' -ErrorAction SilentlyContinue).'zapret-discord-youtube'
     $img = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\zapret' -ErrorAction SilentlyContinue).ImagePath
-    L ("служба: {0}, стратегия в реестре: {1}, папка новой версии: {2}" -f $svc.Status, $reg, ($img -like "*1.10.4*"))
+    L ("служба: {0}, стратегия в реестре: {1}, папка новой версии: {2}" -f $svc.Status, $reg, ($img -like "*$(Split-Path $Z -Leaf)*"))
     return ($svc.Status -eq 'Running' -and $reg -eq $name)
 }
 

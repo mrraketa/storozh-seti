@@ -356,14 +356,20 @@ public static class Vstraivanie
         svoy = false;
     }
 
+    // Показывать окно — только через ShowWindow, НЕ флагом SWP_SHOWWINDOW: флаг окно показывает, но не шлёт
+    // ему WM_SHOWWINDOW, а по этому сообщению WinForms и WPF узнают, видно ли окно. «Спрячься» прячет через
+    // ShowWindow (сообщение приходит, WinForms считает окно спрятанным), а показ флагом — без сообщения: окно на
+    // экране, WinForms думает, что оно спрятано, и новым элементам окна Windows не создаёт — раздел пустой.
+    // Проверено 20.11 (storozh-okno, --proba-vynos): после «Вынуть окно из Коробки» внутри было пусто навсегда.
     static void Postavit(bool pokazat)
     {
         svoy = true;
         IntPtr bylDpi = IntPtr.Zero;
         try { bylDpi = SetThreadDpiAwarenessContext(new IntPtr(-4)); } catch { }   // per-monitor v2
         if (IsIconic(okno)) ShowWindow(okno, SW_SHOWNOACTIVATE);
-        SetWindowPos(okno, IntPtr.Zero, mx, my, mw, mh,
-            SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED | (pokazat ? SWP_SHOWWINDOW : 0));
+        bool pokazyvaem = pokazat && !IsWindowVisible(okno);
+        SetWindowPos(okno, IntPtr.Zero, mx, my, mw, mh, SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        if (pokazyvaem) ShowWindow(okno, SW_SHOWNA);   // уже на месте; без фокуса — он может быть в игре
         try { if (bylDpi != IntPtr.Zero) SetThreadDpiAwarenessContext(bylDpi); } catch { }
         svoy = false;
     }
@@ -382,17 +388,23 @@ public static class Vstraivanie
             SetWindowLongPtr(okno, GWLP_HWNDPARENT, bylVladelec);
             SetWindowLong(okno, GWL_STYLE, (GetWindowLong(okno, GWL_STYLE) & ~RAMKA) | (bylStil & RAMKA));
             SetWindowLong(okno, GWL_EXSTYLE, (GetWindowLong(okno, GWL_EXSTYLE) & ~EX_RAMKA) | (bylEx & EX_RAMKA));
+            // Место — пока окно спрятано, показ — через ShowWindow (см. Postavit: иначе WinForms считает окно спрятанным).
             if (bylSvernut)
             {
-                WINDOWPLACEMENT p = bylPl; p.showCmd = SW_SHOWMINNOACTIVE; SetWindowPlacement(okno, ref p);
+                WINDOWPLACEMENT p = bylPl; p.showCmd = SW_HIDE; SetWindowPlacement(okno, ref p);
+                ShowWindow(okno, SW_SHOWMINNOACTIVE);
             }
             else if (bylRazvernut)
             {
-                WINDOWPLACEMENT p = bylPl; p.showCmd = vidno ? SW_SHOWMAXIMIZED : SW_HIDE; SetWindowPlacement(okno, ref p);
+                WINDOWPLACEMENT p = bylPl; p.showCmd = SW_HIDE; SetWindowPlacement(okno, ref p);
+                if (vidno) ShowWindow(okno, SW_SHOWMAXIMIZED);
             }
             else
+            {
                 SetWindowPos(okno, IntPtr.Zero, bylRect.l, bylRect.t, bylRect.r - bylRect.l, bylRect.b - bylRect.t,
-                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED | (vidno ? SWP_SHOWWINDOW : 0));
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
+                if (vidno) ShowWindow(okno, SW_SHOWNA);
+            }
             Perehody(false);
             svoy = false;
         }

@@ -84,6 +84,13 @@ class Knopa : Button
             if (!Glavnaya) using (var p = new Pen(pal.Liniya)) g.DrawPath(p, put);
         }
         int otst = 12;
+        // узкая кнопка со значком (меню узкого окна) — только значок посередине, подпись в подсказке
+        if (!string.IsNullOrEmpty(Znachok) && Width < 70)
+        {
+            using (var fz = Zn.Shrift(Font.Size + 2f))
+                TextRenderer.DrawText(g, Znachok, fz, new Rectangle(0, 0, Width, Height), tekst, TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
+            return;
+        }
         if (!string.IsNullOrEmpty(Znachok))
         {
             using (var fz = Zn.Shrift(Font.Size + 1f))

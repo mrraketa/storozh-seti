@@ -1,8 +1,15 @@
 ﻿# Тест стратегий zapret на скорость видео YouTube напрямую (без VPN). Запуск с правами администратора.
 # Ставит самую быструю из надёжных (прошли полный тест 36/36), если она заметно быстрее ALT13; иначе — ALT13.
 $ErrorActionPreference = 'Continue'
+function Get-Zagruzki {
+    # папка «Загрузки» — её можно перенести на другой диск, поэтому спрашиваем у Windows
+    $p = $null
+    try { $p = (New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path } catch { }
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) { $p = Join-Path $env:USERPROFILE 'Downloads' }
+    return $p
+}
 # самая новая версия zapret в Загрузках (папка с service.bat)
-$Z = (Get-ChildItem (Join-Path $env:USERPROFILE 'Downloads') -Directory -Filter 'zapret-discord-youtube-*' | Where-Object { Test-Path (Join-Path $_.FullName 'service.bat') } |
+$Z = (Get-ChildItem (Get-Zagruzki) -Directory -Filter 'zapret-discord-youtube-*' | Where-Object { Test-Path (Join-Path $_.FullName 'service.bat') } |
     Sort-Object { [version](($_.Name -replace '^zapret-discord-youtube-', '') -replace '[^0-9.]', '') } | Select-Object -Last 1).FullName
 $HERE = $PSScriptRoot
 $LOG = Join-Path $HERE 'zapret-youtube.log'
@@ -32,7 +39,7 @@ function Check-Discord {
 function Stop-Winws { Get-Process winws -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1 }
 
 L '=== старт теста стратегий на скорость YouTube'
-if (-not $URL) { L 'не смог получить ссылку на видео YouTube (yt-dlp) — тест не начинаю, zapret не трогаю'; L '=== готово'; exit }
+if (-not $URL) { L 'не смог получить ссылку на видео YouTube (нужна программа yt-dlp, её нет или она не ответила) — тест не начинаю, zapret не трогаю'; L '=== готово'; exit }
 try {
     L 'снимаю службу zapret'
     & sc.exe stop zapret | Out-Null; Start-Sleep 2; & sc.exe delete zapret | Out-Null

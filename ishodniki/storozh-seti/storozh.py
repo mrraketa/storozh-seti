@@ -17,20 +17,50 @@ BACKUP = os.path.join(HERE, "backup")
 LOCK = os.path.join(HERE, "run.lock")
 
 KD = os.path.join(os.environ.get("APPDATA") or os.path.expanduser(r"~\AppData\Roaming"), "karing", "karing")
-KEXE = r"C:\Program Files\Karing\karing.exe"
+KEXE = os.path.join(os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or r"C:\Program Files",
+                    "Karing", "karing.exe")   # обычное место; где Karing стоит на самом деле — karing_exe()
 CORE = os.path.join(KD, "service_core.json")
 KLOG = os.path.join(KD, "service_core.log")
 KFILES = ["karing_subscribe_use.json", "karing_routing_group.json", "karing_setting.json"]
-STEAM = r"C:\Program Files (x86)\Steam"
+
+
+def _steam_papka():
+    """Папка Steam: из реестра (у друга Steam может стоять на другом диске), иначе обычное место."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+            p = os.path.normpath(winreg.QueryValueEx(k, "SteamPath")[0])
+        if os.path.isdir(p):
+            return p
+    except OSError:
+        pass
+    return r"C:\Program Files (x86)\Steam"
+
+
+STEAM = _steam_papka()
 STEAM_LOG = os.path.join(STEAM, "logs", "connection_log.txt")
 
+
 def _porty_karing():
-    """Порты Karing — из его же настроек (mixed_in_rule / mixed_in_proxy); у всех по умолчанию 3067 / 3066."""
+    """Порты Karing — из его же настроек: рабочий конфиг (mixed_in_rule / mixed_in_proxy), иначе karing_setting.json;
+    у всех по умолчанию 3067 / 3066."""
+    pr = pv = None
     try:
-        with open(os.path.join(os.environ.get("APPDATA") or "", "karing", "karing", "service_core.json"), encoding="utf-8") as f:
+        with open(CORE, encoding="utf-8") as f:
             vh = {i.get("tag"): i.get("listen_port") for i in json.load(f).get("inbounds", [])}
-        return vh.get("mixed_in_rule") or 3067, vh.get("mixed_in_proxy") or 3066
+        pr, pv = vh.get("mixed_in_rule"), vh.get("mixed_in_proxy")
     except Exception:
+        pass
+    if not (pr and pv):
+        try:
+            with open(os.path.join(KD, "karing_setting.json"), encoding="utf-8") as f:
+                px = json.load(f).get("proxy") or {}
+            pr, pv = pr or px.get("mixed_port"), pv or px.get("mixed_forword_port")
+        except Exception:
+            pass
+    try:
+        return int(pr or 3067), int(pv or 3066)
+    except (TypeError, ValueError):
         return 3067, 3066
 
 
@@ -92,8 +122,18 @@ def now():
 
 
 def say(msg):
-    with open(REPORT, "a", encoding="utf-8") as f:
-        f.write(f"[{now()}] {msg}\n")
+    try:
+        with open(REPORT, "a", encoding="utf-8") as f:
+            f.write(f"[{now()}] {msg}\n")
+    except OSError:
+        pass
+
+
+def _python(okno=False):
+    """python.exe (okno=False) или pythonw.exe (okno=True) рядом с тем Python, что запущен сейчас:
+    у друга это встроенный Python в папке программы, а не системный."""
+    p = os.path.join(os.path.dirname(sys.executable), "pythonw.exe" if okno else "python.exe")
+    return p if os.path.exists(p) else sys.executable
 
 
 def run(args, timeout=30):
@@ -103,6 +143,13 @@ def run(args, timeout=30):
                               env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     except subprocess.TimeoutExpired:
         return None
+    except OSError:   # нет такой программы (например, curl.exe на Windows старше 10 версии 1803)
+        return None
+
+
+def curl_net():
+    """curl.exe есть во всех Windows 10 (с 1803) и 11; на более старых его нет — тогда сторож не может проверять сайты."""
+    return shutil.which("curl.exe") is None
 
 
 def curl(url, proxy, t=10):
@@ -274,6 +321,17 @@ def call_still_waits():
     return False
 
 
+def sovet(dlya_nego, dlya_drugih):
+    """Подсказка в окошке: у него (Claude закреплён) — «напишите Claude …», у друга — где нажать в окне сторожа."""
+    return dlya_nego if CLAUDE_PIN else dlya_drugih
+
+
+def zapret_ustanovlen(zq=None):
+    """Служба zapret вообще есть (работает или нет). sc отвечает кодом 1060, если службы нет."""
+    zq = zq if zq is not None else run(["sc", "query", "zapret"])
+    return bool(zq) and zq.returncode != 1060 and "1060" not in (zq.stdout or "")
+
+
 def suffix(host):
     parts = host.lower().strip(".").split(".")
     base = ".".join(parts[-2:])
@@ -288,14 +346,62 @@ def karing_kill():
     time.sleep(2)
 
 
+class KaringNet(Exception):
+    """Понятная человеку причина, почему с Karing сейчас ничего не сделать."""
+
+
+def karing_exe():
+    """Где стоит karing.exe: из service.json самого Karing (work_dir = <папка Karing>\\data), иначе обычные места."""
+    sj = load_json(os.path.join(KD, "service.json"), {}) or {}
+    mesta = []
+    if sj.get("work_dir"):
+        mesta.append(os.path.join(os.path.dirname(os.path.normpath(sj["work_dir"])), "karing.exe"))
+    mesta += [KEXE, os.path.join(os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)", "Karing", "karing.exe"),
+              os.path.join(os.environ.get("LOCALAPPDATA") or "", "Programs", "Karing", "karing.exe")]
+    return next((p for p in mesta if p and os.path.isfile(p)), None)
+
+
+def karing_beda():
+    """Почему Karing сейчас не работает — словами для человека (None — работает)."""
+    if not os.path.isdir(KD) and not karing_exe():
+        return "Karing не установлен — установите Karing и добавьте в него подписку"
+    if not os.path.exists(CORE):
+        return "Karing ещё ни разу не подключался — откройте Karing и включите в нём подключение"
+    if "karing.exe" not in procs():
+        return "Karing не запущен — запустите его и включите подключение"
+    if not port_up():
+        return "Karing открыт, но подключение в нём выключено — включите его"
+    return None
+
+
+def perezapusk_nelzya():
+    """Почему Karing сейчас нельзя перезапускать (None — можно). Без этой проверки у друга после перезапуска VPN
+    мог бы остаться выключенным: Karing не найден или в нём выключено автоподключение после запуска."""
+    if not karing_exe():
+        return "не нашёл программу Karing (karing.exe) — перезапустить её не смогу"
+    st = load_json(os.path.join(KD, "karing_setting.json"), {}) or {}
+    if st.get("auto_connect_after_launch") is False:
+        return ("в Karing выключено автоматическое подключение после запуска — после перезапуска VPN остался бы "
+                "выключенным. Включите его в настройках Karing и повторите")
+    return None
+
+
 def karing_start():
-    # через Проводник, чтобы Karing не зависел от сторожа
-    subprocess.Popen(["explorer.exe", KEXE], creationflags=NOWIN)
+    """Через Проводник, чтобы Karing не зависел от сторожа. False — karing.exe не найден."""
+    exe = karing_exe()
+    if not exe:
+        return False
+    subprocess.Popen(["explorer.exe", exe], creationflags=NOWIN)
+    return True
 
 
 def karing_wait(t0):
     for _ in range(60):
-        if port_up() and os.path.getmtime(CORE) > t0:
+        try:
+            fresh = os.path.getmtime(CORE) > t0
+        except OSError:
+            fresh = False
+        if fresh and port_up():
             time.sleep(4)
             return True
         time.sleep(1)
@@ -307,13 +413,78 @@ def claude_ok():
     return code not in ("000", "403")
 
 
+def claude_vedu():
+    """Сторож следит за Claude, только если об этом просили: Claude закреплён за сервером (настройка «claude_strana»)
+    или в Karing есть своя группа «Claude». У друга по умолчанию нет ни того, ни другого — и проверять Claude
+    там бессмысленно: напрямую из РФ он отвечает 403, и любая правка откатывалась бы."""
+    if CLAUDE_PIN:
+        return True
+    use = load_json(os.path.join(KD, "karing_subscribe_use.json"), {}) or {}
+    return any(g.get("diversion_name") == "Claude" for g in use.get("diversion_group", []) or [])
+
+
+def vpn_ok():
+    """Сам VPN работает: через порт «всё через VPN» открывается проверочная страница Google."""
+    code, _ = curl("https://www.gstatic.com/generate_204", VPN)
+    return ok(code)
+
+
+def svyaz_ok():
+    """Главная проверка после перезапуска: у него — Claude через Англию, у остальных — сам VPN."""
+    return claude_ok() if claude_vedu() else vpn_ok()
+
+
 def verify_after_restart():
-    checks = {
-        "Claude": claude_ok(),
-        "Steam вход": ok(curl("https://cmp1-sto2.steamserver.net/", RULES)[0]),
-        "Яндекс": ok(curl("https://ya.ru/", RULES)[0]),
-    }
+    checks = {}
+    if claude_vedu():
+        checks["Claude"] = claude_ok()
+    else:
+        checks["VPN"] = vpn_ok()
+    if os.path.isdir(STEAM):
+        checks["Steam вход"] = ok(curl("https://cmp1-sto2.steamserver.net/", RULES)[0])
+    checks["Яндекс"] = ok(curl("https://ya.ru/", RULES)[0])
     return all(checks.values()), checks
+
+
+def _zapomnit():
+    """Копия файлов Karing перед правкой: в папку backup и в память. Файла не было — запомнить и это,
+    чтобы при откате удалить созданный (у свежего Karing части файлов может не быть)."""
+    os.makedirs(BACKUP, exist_ok=True)
+    saved = {}
+    for n in KFILES:
+        p = os.path.join(KD, n)
+        try:
+            with open(p, "rb") as f:
+                saved[n] = f.read()
+            shutil.copy2(p, os.path.join(BACKUP, n))
+        except FileNotFoundError:
+            saved[n] = None
+    return saved
+
+
+def _vernut(saved):
+    for n, b in saved.items():
+        p = os.path.join(KD, n)
+        try:
+            if b is None:
+                if os.path.exists(p):
+                    os.remove(p)
+            else:
+                with open(p, "wb") as f:
+                    f.write(b)
+        except OSError:
+            pass
+
+
+def gruppy(rg):
+    """Список групп «Самостоятельная настройка» из karing_routing_group.json. У свежего Karing его может не быть
+    (items пустой) — тогда создаётся такой же, какой делает сам Karing."""
+    items = rg.setdefault("items", [])
+    it = next((x for x in items if x.get("groupid") == "custom"), None)
+    if it is None:
+        it = {"groupid": "custom", "urlOrPath": "", "remark": "Самостоятельная настройка", "editAble": True, "groups": []}
+        items.insert(0, it)
+    return it.setdefault("groups", [])
 
 
 def set_group(groups, use, name, suffixes):
@@ -322,10 +493,11 @@ def set_group(groups, use, name, suffixes):
     if suffixes:
         groups.append({"groupid": "custom", "name": name, "type": "", "or": True,
                        "domain_suffix": sorted(suffixes)})
-    use["diversion_group"] = [g for g in use["diversion_group"] if g.get("diversion_name") != name]
+    use["diversion_group"] = [g for g in use.get("diversion_group", []) if g.get("diversion_name") != name]
     if suffixes:
+        tgt = target_server()
         use["diversion_group"].append({"diversion_groupid": "custom", "diversion_name": name,
-                                       "server_groupid": sub_id(use), "server_name": target_server(),
+                                       "server_groupid": sub_id(use, tgt), "server_name": tgt,
                                        "dns_servers": []})
 
 
@@ -334,9 +506,9 @@ ROUTE_PREFIX = "🧭 "
 
 def set_routes(groups, use, routes):
     """Маршруты по программам: группа «🧭 имя.exe» с process_name_windows, сразу после Claude."""
-    groups[:] = [g for g in groups if not g["name"].startswith(ROUTE_PREFIX)]
+    groups[:] = [g for g in groups if not g.get("name", "").startswith(ROUTE_PREFIX)]
     use["diversion_group"][:] = [g for g in use["diversion_group"] if not g.get("diversion_name", "").startswith(ROUTE_PREFIX)]
-    pos_g = next((i + 1 for i, g in enumerate(groups) if g["name"] == "Claude"), 0)
+    pos_g = next((i + 1 for i, g in enumerate(groups) if g.get("name") == "Claude"), 0)
     pos_u = next((i + 1 for i, g in enumerate(use["diversion_group"]) if g.get("diversion_name") == "Claude"), 0)
     for exe, tgt in sorted(routes.items(), reverse=True):
         name = ROUTE_PREFIX + exe
@@ -347,7 +519,8 @@ def set_routes(groups, use, routes):
         elif tgt == "block":
             sg, sn = "block", "block_out"
         else:
-            sg, sn = sub_id(use), (role_server("fast") if tgt == "vpn" else tgt)
+            sn = role_server("fast") if tgt == "vpn" else tgt
+            sg = sub_id(use, sn)
         use["diversion_group"].insert(pos_u, {"diversion_groupid": "custom", "diversion_name": name,
                                               "server_groupid": sg, "server_name": sn, "dns_servers": []})
 
@@ -355,68 +528,78 @@ def set_routes(groups, use, routes):
 def apply_changes(add_suffixes, fix_invariants, list_groups=None, add_direct=None, routes=None, remove=None):
     """Правит файлы Karing и перезапускает его. Возвращает (успех, описание).
     list_groups: {имя группы: множество доменов} — группы из списков блокировок, заменяются целиком."""
-    os.makedirs(BACKUP, exist_ok=True)
-    for n in KFILES:
-        shutil.copy2(os.path.join(KD, n), os.path.join(BACKUP, n))
+    if not os.path.exists(CORE):
+        return False, karing_beda() or "Karing не найден"
+    if curl_net():
+        return False, "нет программы curl.exe (она есть в Windows 10 и 11) — без неё не проверить, что после правки всё работает"
+    nelzya = perezapusk_nelzya()   # Karing закрыт, но найден — запустим его сами, как раньше
+    if nelzya:
+        return False, nelzya
+    vedu_claude = claude_vedu()
+    saved = _zapomnit()
     karing_kill()
     try:
-        rg = load_json(os.path.join(KD, "karing_routing_group.json"), None)
-        use = load_json(os.path.join(KD, "karing_subscribe_use.json"), None)
-        st = load_json(os.path.join(KD, "karing_setting.json"), None)
-        groups = rg["items"][0]["groups"]
+        rg = load_json(os.path.join(KD, "karing_routing_group.json"), None) or {"items": [], "rule_set_items": []}
+        use = load_json(os.path.join(KD, "karing_subscribe_use.json"), None) or {}
+        st = load_json(os.path.join(KD, "karing_setting.json"), None) or {}
+        use.setdefault("diversion_group", [])
+        groups = gruppy(rg)
         if routes is not None:
             set_routes(groups, use, routes)
         if remove:  # «Вернуть» из окна: убрать сайт из групп, куда его добавил сторож
             for g in groups:
-                if g["name"] in (AUTO_GROUP, DIRECT_GROUP):
+                if g.get("name") in (AUTO_GROUP, DIRECT_GROUP):
                     g["domain_suffix"] = [x for x in g.get("domain_suffix", []) if x not in set(remove)]
         for name, doms in (list_groups or {}).items():
             set_group(groups, use, name, doms)
         if add_direct:
-            dg = next((g for g in groups if g["name"] == DIRECT_GROUP), None)
+            dg = next((g for g in groups if g.get("name") == DIRECT_GROUP), None)
             if not dg:
                 dg = {"groupid": "custom", "name": DIRECT_GROUP, "type": "", "or": True, "domain_suffix": []}
-                pos = next((i + 1 for i, g in enumerate(groups) if g["name"].startswith("▶️")), 1)
+                pos = next((i + 1 for i, g in enumerate(groups) if g.get("name", "").startswith("▶️")), 1)
                 groups.insert(pos, dg)
                 use["diversion_group"].insert(1, {"diversion_groupid": "custom", "diversion_name": DIRECT_GROUP,
                                                   "server_groupid": "direct", "server_name": "direct_out",
                                                   "dns_servers": []})
             dg["domain_suffix"] = sorted(set(dg.get("domain_suffix", [])) | set(add_direct))
         for g in groups:  # Claude — только через VPN: убрать его домены из всех групп «напрямую»
-            if g["name"] == DIRECT_GROUP or g["name"].startswith("▶️"):
+            if g.get("name") == DIRECT_GROUP or g.get("name", "").startswith("▶️"):
                 g["domain_suffix"] = [x for x in g.get("domain_suffix", []) if not NEVER_DIRECT.search(x)]
-        auto = next((g for g in groups if g["name"] == AUTO_GROUP), None)
+        auto = next((g for g in groups if g.get("name") == AUTO_GROUP), None)
         if add_suffixes:
             if not auto:
                 auto = {"groupid": "custom", "name": AUTO_GROUP, "type": "", "or": True, "domain_suffix": []}
                 groups.append(auto)
             auto["domain_suffix"] = sorted(set(auto.get("domain_suffix", [])) | set(add_suffixes))
             for g in groups:  # сайт перенесён в VPN — убрать его из «напрямую», иначе то правило стоит выше и VPN не срабатывает
-                if g["name"] == DIRECT_GROUP:
+                if g.get("name") == DIRECT_GROUP:
                     g["domain_suffix"] = [x for x in g.get("domain_suffix", []) if x not in set(add_suffixes)]
         if auto and not any(g.get("diversion_name") == AUTO_GROUP for g in use["diversion_group"]):
+            tgt = target_server()
             use["diversion_group"].append({"diversion_groupid": "custom", "diversion_name": AUTO_GROUP,
-                                           "server_groupid": sub_id(use), "server_name": target_server(),
+                                           "server_groupid": sub_id(use, tgt), "server_name": tgt,
                                            "dns_servers": []})
         if fix_invariants:
             st["proxy_all"] = False
-            st["dns"]["enable_inbound_domain_resolve"] = True
-            st["dns"]["ttl"] = DNS_TTL
-            for g in use["diversion_group"]:
-                if g.get("diversion_name") == "Claude":
-                    g["server_groupid"], g["server_name"] = sub_id(use), role_server("claude")
-            for g in groups:
-                if g["name"] == "Claude":
-                    g["domain_suffix"] = sorted(set(g.get("domain_suffix", [])) | CLAUDE_SUFFIXES)
-            # Claude — первым правилом, иначе claude.ai перехватывают GFW/Cloudflare
-            groups.sort(key=lambda x: 0 if x["name"] == "Claude" else 1)
-            use["diversion_group"].sort(key=lambda x: 0 if x.get("diversion_name") == "Claude" else 1)
+            dns = st.setdefault("dns", {})
+            dns["enable_inbound_domain_resolve"] = True
+            dns["ttl"] = DNS_TTL
+            if vedu_claude:   # у друга Claude не ведём — его группы не трогаем и не создаём
+                cs = role_server("claude")
+                for g in use["diversion_group"]:
+                    if g.get("diversion_name") == "Claude":
+                        g["server_groupid"], g["server_name"] = sub_id(use, cs), cs
+                for g in groups:
+                    if g.get("name") == "Claude":
+                        g["domain_suffix"] = sorted(set(g.get("domain_suffix", [])) | CLAUDE_SUFFIXES)
+                # Claude — первым правилом, иначе claude.ai перехватывают GFW/Cloudflare
+                groups.sort(key=lambda x: 0 if x.get("name") == "Claude" else 1)
+                use["diversion_group"].sort(key=lambda x: 0 if x.get("diversion_name") == "Claude" else 1)
         save_json(os.path.join(KD, "karing_routing_group.json"), rg)
         save_json(os.path.join(KD, "karing_subscribe_use.json"), use)
         save_json(os.path.join(KD, "karing_setting.json"), st)
     except Exception as e:
-        for n in KFILES:
-            shutil.copy2(os.path.join(BACKUP, n), os.path.join(KD, n))
+        _vernut(saved)
         karing_start()
         return False, f"не смог поправить файлы Karing ({e}), вернул как было"
     t0 = time.time()
@@ -426,8 +609,7 @@ def apply_changes(add_suffixes, fix_invariants, list_groups=None, add_direct=Non
     if passed:
         return True, "проверка после перезапуска: " + ", ".join(f"{k} — да" for k in checks)
     karing_kill()
-    for n in KFILES:
-        shutil.copy2(os.path.join(BACKUP, n), os.path.join(KD, n))
+    _vernut(saved)
     t1 = time.time()
     karing_start()
     karing_wait(t1)
@@ -449,7 +631,7 @@ def idle_minutes():
 def popup(text):
     """Окошко-напоминание отдельным процессом — сторож не ждёт, пока его закроют."""
     code = f"import ctypes; ctypes.windll.user32.MessageBoxW(0, {text!r}, 'Сторож сети', 0x40 | 0x40000)"
-    subprocess.Popen([sys.executable.replace("python.exe", "pythonw.exe"), "-c", code], creationflags=NOWIN)
+    subprocess.Popen([_python(okno=True), "-c", code], creationflags=NOWIN)
 
 
 def manual_global():
@@ -496,13 +678,14 @@ def firewall_gaps():
     if time.time() - st.get("fw_check_ts", 0) < 3600:
         return
     st["fw_check_ts"] = time.time()
+    _LA = (os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")).replace("'", "''")
     ps = ("$r=@(Get-NetFirewallRule -Group '" + FW_GROUP + "' -ErrorAction SilentlyContinue | "
           "Get-NetFirewallApplicationFilter | ForEach-Object Program);"
           "if(-not $r){'NORULES'};$r;'---';"
           "foreach($p in Get-AppxPackage -Name 'Claude*'){Get-ChildItem $p.InstallLocation -Recurse "
           "-Include 'Claude.exe','cowork-svc.exe' -File -EA SilentlyContinue|ForEach-Object FullName};"
-          "foreach($cc in 'C:\\Users\\user\\AppData\\Local\\Claude-Data',"
-          "'C:\\Users\\user\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\Claude\\claude-code'){"
+          f"foreach($cc in '{_LA}\\Claude-Data',"
+          f"'{_LA}\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\Claude\\claude-code'){{"
           "if(Test-Path $cc){Get-ChildItem $cc -Recurse -Filter claude.exe -File|ForEach-Object FullName}}")
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
@@ -566,13 +749,16 @@ def uk_proxy_watch():
 
 
 def invariants_broken():
-    st = load_json(os.path.join(KD, "karing_setting.json"), {})
-    use = load_json(os.path.join(KD, "karing_subscribe_use.json"), {})
+    st = load_json(os.path.join(KD, "karing_setting.json"), {}) or {}
+    use = load_json(os.path.join(KD, "karing_subscribe_use.json"), {}) or {}
     bad = []
-    if (st.get("dns", {}).get("ttl") or 0) > DNS_TTL:
-        bad.append(f"кэш DNS {st['dns']['ttl'] // 3600} ч (CDN вроде Akamai меняют узлы — магазин Steam висел)")
-    if not st.get("dns", {}).get("enable_inbound_domain_resolve"):
+    dns = st.get("dns") or {}
+    if (dns.get("ttl") or 0) > DNS_TTL:
+        bad.append(f"кэш DNS {dns['ttl'] // 3600} ч (CDN вроде Akamai меняют узлы — магазин Steam висел)")
+    if not dns.get("enable_inbound_domain_resolve"):
         bad.append("выключено определение адресов (правило Cloudflare не работает)")
+    if not claude_vedu():
+        return bad   # у друга Claude не закреплён и своей группы нет — правила про Claude не проверяем
     cl = [g for g in use.get("diversion_group", []) if g.get("diversion_name") == "Claude"]
     if not cl or cl[0].get("server_groupid") == "direct":
         bad.append("Claude назначен напрямую, а не через VPN")
@@ -803,7 +989,7 @@ NEVER_DIRECT = re.compile(r"(^|\.)(claude\.ai|claude\.com|claudeusercontent\.com
 CLAUDE_SUFFIXES = {"anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com", "clau.de"}  # 15.10: все адреса Claude — через Англию  # Claude — только VPN
 YT_DIRECT = re.compile(r"(^|\.)(youtube\.com|googlevideo\.com|ytimg\.com|ggpht\.com|youtu\.be|youtube-nocookie\.com)$")
 GOOD_SERVER = re.compile(r"🔃|^Польша🇵🇱$")          # основные зарубежные
-BAD_SERVER = re.compile(r"Россия|LTE|YouTube")        # российские, мобильные, спецсерверы
+BAD_SERVER = re.compile(r"Россия|Russia|Moscow|Москва|🇷🇺|LTE|YouTube", re.I)   # российские (у друга имена по-английски), мобильные, спецсерверы
 
 
 def clash():
@@ -836,15 +1022,31 @@ def current_vpn_server():
 PROXY_TYPES = {"vless", "vmess", "trojan", "shadowsocks", "hysteria", "hysteria2", "tuic", "wireguard", "socks", "http", "shadowtls", "anytls"}
 
 
+def vse_servery():
+    """Все VPN-серверы, что есть в Karing (без «напрямую», «блок» и автовыбора)."""
+    return [o["tag"] for o in (load_json(CORE, {}) or {}).get("outbounds", []) if o.get("type") in PROXY_TYPES and o.get("tag")]
+
+
 def candidates():
     """Серверы подписки. У него — основные с «🔃» в имени; у друга имена другие — тогда все серверы, кроме российских и спецсерверов."""
-    vse = [o["tag"] for o in load_json(CORE, {}).get("outbounds", []) if o.get("type") in PROXY_TYPES and o.get("tag")]
+    vse = vse_servery()
     svoi = [t for t in vse if GOOD_SERVER.search(t) and not BAD_SERVER.search(t)]
     return svoi or [t for t in vse if not BAD_SERVER.search(t)] or vse
 
 
-def sub_id(use):
-    return next((x.get("groupid") for x in use.get("recent", []) if x.get("groupid")), None)
+def sub_id(use, tag=None):
+    """groupid подписки для группы маршрутов: та подписка, где есть сервер tag (так Karing находит сервер).
+    Без tag или если не нашёлся — подписка «недавнего» сервера, иначе первая подписка с серверами.
+    У свежего Karing «недавних» может не быть — раньше тогда получался None, и Karing выбрасывал правило."""
+    subs = [it for it in ((load_json(os.path.join(KD, "karing_subscribe.json"), {}) or {}).get("items") or [])
+            if it.get("groupid") and it.get("servers")]
+    if tag:
+        for it in subs:
+            if any(x.get("tag") == tag for x in it.get("servers") or []):
+                return it["groupid"]
+    return (next((x.get("groupid") for x in (use or {}).get("recent", []) or [] if x.get("groupid")), None)
+            or next((it["groupid"] for it in subs if it["groupid"] != "custom"), None)
+            or next((it["groupid"] for it in subs), None))
 
 
 ROLES = {
@@ -864,7 +1066,8 @@ def home(role):
     tag = st.get("fast_server") or PREFERRED
     live = candidates()
     if live and tag not in live:
-        for alt in (PREFERRED, "Франция🇫🇷🔃", "Англия🇬🇧🔃", "Германия🇩🇪🔃"):
+        sel = (load_json(os.path.join(KD, "karing_subscribe_use.json"), {}) or {}).get("select_default")
+        for alt in (PREFERRED, "Франция🇫🇷🔃", "Англия🇬🇧🔃", "Германия🇩🇪🔃", sel):   # sel — выбранный в Karing (у друга)
             if alt in live:
                 return alt
         return live[0]
@@ -932,29 +1135,52 @@ def target_server():
     return role_server("fast")
 
 
+def vybrat_tekushchiy(use, tag):
+    """Сделать tag текущим сервером Karing — как выбор сервера в его окне: select_default и первым в «недавних»."""
+    if not tag or tag in ("direct_out", "block_out"):
+        return
+    use["select_default"] = tag
+    rec = use.get("recent") or []
+    i = next((k for k, x in enumerate(rec) if x.get("tag") == tag), None)
+    if i:
+        rec.insert(0, rec.pop(i))
+
+
 def assign_vpn_groups(server=None):
-    """Claude -> сервер роли claude, остальные VPN-группы -> сервер роли fast."""
-    use = load_json(os.path.join(KD, "karing_subscribe_use.json"), None)
-    sub = sub_id(use)
-    for g in use["diversion_group"]:
-        if g.get("diversion_groupid") == "final" or g.get("server_groupid") == "direct":
+    """Claude -> сервер роли claude, остальные VPN-группы -> сервер роли fast.
+    Группы «текущий сервер Karing» (currentSelected) и блок не трогаем. Если Claude не закреплён (у друга),
+    «остальное» — это и есть текущий сервер Karing: его и ставим (иначе замер у друга ничего бы не менял)."""
+    p = os.path.join(KD, "karing_subscribe_use.json")
+    use = load_json(p, None)
+    if not use:
+        return
+    for g in use.get("diversion_group", []) or []:
+        if g.get("diversion_groupid") == "final" or g.get("server_groupid") in ("direct", "currentSelected"):
             continue
         if g.get("diversion_name", "").startswith(("🧪", "🧭")):
             continue
-        if g.get("diversion_name", "").startswith("⛔"):
+        if g.get("diversion_name", "").startswith("⛔") or g.get("server_groupid") == "block":
             g["server_groupid"], g["server_name"] = "block", "block_out"
             continue
-        role = "claude" if g.get("diversion_name") == "Claude" else "fast"
-        g["server_groupid"], g["server_name"] = sub, role_server(role)
-    save_json(os.path.join(KD, "karing_subscribe_use.json"), use)
+        tag = role_server("claude" if g.get("diversion_name") == "Claude" else "fast")
+        g["server_groupid"], g["server_name"] = sub_id(use, tag), tag
+    if not CLAUDE_PIN:
+        vybrat_tekushchiy(use, role_server("fast"))
+    save_json(p, use)
 
 
 def fast_current():
-    """Через какой сервер сейчас идёт «всё остальное» (по правилу заблокированного в РФ)."""
-    for r in load_json(CORE, {}).get("route", {}).get("rules", []):
-        if "GFW" in r.get("name", ""):
+    """Через какой сервер сейчас идёт «всё остальное»: у него — по правилу заблокированного в РФ (GFW);
+    у друга такой группы может не быть или она «напрямую» — тогда текущий сервер Karing."""
+    route = (load_json(CORE, {}) or {}).get("route", {}) or {}
+    for r in route.get("rules", []):
+        if "GFW" in r.get("name", "") and r.get("outbound") not in (None, "direct_out", "block_out"):
             return r.get("outbound")
-    return None
+    for r in route.get("rules", []):
+        if r.get("name") == "proxy[all]" and r.get("outbound"):
+            return r.get("outbound")
+    sel = (load_json(os.path.join(KD, "karing_subscribe_use.json"), {}) or {}).get("select_default")
+    return sel or (route.get("final") if route.get("final") not in (None, "direct_out", "block_out") else None)
 
 
 def switch_roles(why, revert=None, claude_moves=True):
@@ -962,23 +1188,33 @@ def switch_roles(why, revert=None, claude_moves=True):
     revert — какие поля state вернуть, если не вышло (иначе в памяти остаётся плохой сервер и всё идёт по кругу).
     claude_moves=False — меняется только «остальное»: если Claude не отвечает, виноват его сервер (Англия мигает),
     а не переключение — тогда достаточно, чтобы ответил новый сервер «остального» (19.10: так откатывалось весь день)."""
-    os.makedirs(BACKUP, exist_ok=True)
-    for n in KFILES:
-        shutil.copy2(os.path.join(KD, n), os.path.join(BACKUP, n))
+    nelzya = perezapusk_nelzya() if os.path.exists(CORE) else (karing_beda() or "Karing не найден")
+    if nelzya:
+        if revert:
+            st = load_json(STATE, {})
+            st.update(revert)
+            save_json(STATE, st)
+        say(f"{why} Не переключаю: {nelzya}.")
+        return False
+    vedu_claude = claude_vedu()
+    saved = _zapomnit()
     karing_kill()
     assign_vpn_groups()
     t0 = time.time()
     karing_start()
     up = karing_wait(t0)
-    c_ok = up and claude_ok()
-    good = c_ok or (up and not claude_moves and delay(fast_current(), 3000) is not None)
+    c_ok = up and svyaz_ok()
+    fc = fast_current() if up else None
+    good = c_ok or (up and not claude_moves and fc is not None and delay(fc, 3000) is not None)
     if good:
-        tail = "Claude отвечает." if c_ok else f"Claude пока не отвечает — мигает его сервер {CLAUDE_PIN}, переключение тут ни при чём."
-        say(f"{why} Сейчас: Claude — {current_vpn_server()}, остальное — {fast_current()}. {tail}")
+        if vedu_claude:
+            tail = "Claude отвечает." if c_ok else f"Claude пока не отвечает — мигает его сервер {CLAUDE_PIN}, переключение тут ни при чём."
+            say(f"{why} Сейчас: Claude — {current_vpn_server()}, остальное — {fast_current()}. {tail}")
+        else:
+            say(f"{why} Сейчас через VPN — {fc}. " + ("VPN работает." if c_ok else "Сервер отвечает."))
         return True
     karing_kill()
-    for n in KFILES:
-        shutil.copy2(os.path.join(BACKUP, n), os.path.join(KD, n))
+    _vernut(saved)
     t1 = time.time()
     karing_start()
     karing_wait(t1)
@@ -986,7 +1222,8 @@ def switch_roles(why, revert=None, claude_moves=True):
         st = load_json(STATE, {})
         st.update(revert)
         save_json(STATE, st)
-    say(f"{why} Переключение не удалось — Claude не ответил, вернул как было.")
+    say(f"{why} Переключение не удалось — " + ("Claude не ответил" if vedu_claude else "VPN через новый сервер не заработал")
+        + ", вернул как было.")
     return False
 
 
@@ -1040,6 +1277,8 @@ def vpn_check():
         return
     if os.path.exists(LOCK) and time.time() - os.path.getmtime(LOCK) < 1800:
         return  # идёт другой проход сторожа — Karing не трогаем вдвоём
+    if not clash()[0]:
+        return  # Karing не установлен или без служебного входа (clash API): ни зависание, ни серверы не проверить
     state = load_json(STATE, {})
     direct_ok = any(_tcp(h, 443) for h in ("77.88.55.242", "87.250.250.242"))
     if "karing.exe" in procs() and direct_ok:
@@ -1054,8 +1293,10 @@ def vpn_check():
                 if len(recent) >= 2:
                     if time.time() - state.get("hang_popup", 0) > 3600:
                         state["hang_popup"] = time.time()
-                        say("Karing не отвечает, два перезапуска за час не помогли — больше не перезапускаю, нужен Claude.")
-                        popup("Karing не работает, и перезапуски не помогают. Напишите Claude «проверь что не так».")
+                        say("Karing не отвечает, два перезапуска за час не помогли — больше не перезапускаю"
+                            + (", нужен Claude." if CLAUDE_PIN else "."))
+                        popup("Karing не работает, и перезапуски не помогают. "
+                              + sovet("Напишите Claude «проверь что не так».", "Перезапустите Karing вручную; не поможет — переустановите его."))
                     state["hang_restarts"] = recent
                     save_json(STATE, state)
                     return
@@ -1092,9 +1333,10 @@ def vpn_check():
     changed, whys = False, []
     revert_keys = {k: state.get(k) for k in ("failover_claude", "failover_fast")}
     live = {"claude": current_vpn_server(), "fast": fast_current()}
+    vse = set(vse_servery())
     for role, cur in live.items():
-        if not cur:
-            continue
+        if not cur or cur not in vse:
+            continue   # нет сервера или это автовыбор Karing (urltest) — его не переключаем
         if role == "claude" and not CLAUDE_PIN:
             continue  # Claude не закреплён — идёт вместе с «остальным»
         if role == "claude" and login_active(state):
@@ -1120,6 +1362,8 @@ def vpn_check():
                 scores = [(d, t) for t in others for d in [delay(t, 3000)] if d]
                 if scores:
                     best = min(scores)[1]
+                    if role == "fast" and not state.get("fast_server"):
+                        state["fast_server"] = cur   # у друга «домашнего» ещё нет — домашним считаем тот, что упал
                     state[fkey], state[okk], state[failk] = best, 0, 0
                     changed = True
                     whys.append(f"сервер {cur} ({'Claude' if role == 'claude' else 'скорость'}) перестал отвечать, временно {best}.")
@@ -1163,16 +1407,34 @@ def main():
 
         # 1. Karing вообще работает?
         if "karing.exe" not in procs():  # процесс есть, но порт молчит — это «завис», им занимается проверка VPN
+            if not os.path.isdir(KD) and not karing_exe():
+                if not state.get("karing_net"):
+                    say("Karing не установлен — сторожу нечего делать. Установите Karing и добавьте подписку.")
+                    state["karing_net"] = True
+                save_json(STATE, state)
+                return
+            state["karing_net"] = False
             if state.get("karing_down"):
-                karing_start()
-                ready = karing_wait(time.time() - 1)
-                say("Karing не работал — запустил заново. " + ("Поднялся." if ready else "НЕ поднялся!"))
+                if karing_start():
+                    ready = karing_wait(time.time() - 1)
+                    say("Karing не работал — запустил заново. " + ("Поднялся." if ready else "НЕ поднялся!"))
+                elif not state.get("karing_exe_net"):
+                    say("Karing не работает, а запустить его не смог — не нашёл karing.exe.")
+                    state["karing_exe_net"] = True
                 state["karing_down"] = False
             else:
                 state["karing_down"] = True  # подождём одну проверку: вдруг его закрыли на минуту
             save_json(STATE, state)
             return
         state["karing_down"] = False
+        state["karing_exe_net"] = False
+        if curl_net():   # без curl.exe все проверки «не открывается» — ничего не трогаем, только сообщаем
+            if not state.get("curl_net_noted"):
+                say("Нет программы curl.exe (она есть в Windows 10 и 11) — сторож не может проверять сайты и ничего не меняет.")
+                state["curl_net_noted"] = True
+            save_json(STATE, state)
+            return
+        state["curl_net_noted"] = False
 
         # Он сам переключил Karing на «Глобально» (например, для входа в аккаунт) — ничего не трогать
         if manual_global():
@@ -1181,7 +1443,8 @@ def main():
                 state["global_noted"] = True
                 state["global_since"] = time.time()
             since = time.time() - state.get("global_since", time.time())
-            if since > 3600 and time.time() - state.get("global_popup", 0) > 6 * 3600:
+            # у него «Глобально» — на время входа, напоминать каждые 6 ч; у друга это может быть обычный режим — один раз
+            if since > 3600 and (time.time() - state.get("global_popup", 0) > 6 * 3600 if CLAUDE_PIN else not state.get("global_popup")):
                 state["global_popup"] = time.time()
                 popup(f"Karing всё ещё в режиме «Глобально» — уже {since / 3600:.0f} ч.\n\n"
                       "Весь интернет идёт через один VPN-сервер, российские сайты тоже. "
@@ -1195,17 +1458,27 @@ def main():
 
         # 2. Главные условия: Claude через VPN и режим «по правилам»
         broken = invariants_broken()
-        if not claude_ok():
+        if claude_vedu() and not claude_ok():
             broken.append("Claude не отвечает по правилам Karing")
+        # поломку, которую 6 раз подряд не удалось починить, дальше чиним не чаще раза в 2 часа (а не каждые 10 минут);
+        # удачная починка обнуляет счёт — то, что лечится, лечится как раньше
+        povt = {k: [t for t in v if time.time() - t < 86400] for k, v in (state.get("inv_fix") or {}).items()}
+        povt = {k: v for k, v in povt.items() if v}
+        uporno = [b for b in broken if len(povt.get(b, [])) >= 6 and time.time() - povt[b][-1] < 2 * 3600]
+        if uporno and state.get("inv_fix_noted") != uporno:
+            say("6 раз подряд не вышло починить перезапуском — пробую теперь раз в 2 часа: " + "; ".join(uporno))
+        state["inv_fix_noted"] = uporno
+        broken = [b for b in broken if b not in uporno]
 
         # 3. Новые ошибки из журнала + раз в час проверка всех программ
         # zapret нужен YouTube (идёт напрямую) и голосу Discord
         zq = run(["sc", "query", "zapret"])
-        if opt("zapret_slezhka") and zq and "RUNNING" not in zq.stdout and time.time() - state.get("zapret_popup", 0) > 6 * 3600:
+        zapret_stoit = zapret_ustanovlen(zq)   # не установлен вовсе (у друга) — не надоедаем окошками
+        if opt("zapret_slezhka") and zapret_stoit and "RUNNING" not in zq.stdout and time.time() - state.get("zapret_popup", 0) > 6 * 3600:
             state["zapret_popup"] = time.time()
             say("Служба zapret не работает — YouTube и голос Discord напрямую не пойдут.")
             popup("Служба zapret не работает — YouTube и голос в Discord сейчас не пойдут. "
-                  "Напишите Claude «проверь zapret».")
+                  + sovet("Напишите Claude «проверь zapret».", "Откройте «Сторож сети» → zapret → «Подобрать стратегию»."))
 
         candidates = {h for h, n in log_failures(state).items() if n >= 2}
         if time.time() - state.get("probe_ts", 0) > 3600:
@@ -1225,13 +1498,14 @@ def main():
             need, why = needs_vpn(host)
             if why:
                 notes.append(why)
-            if need and YT_DIRECT.search(host):
+            if need and YT_DIRECT.search(host) and zapret_stoit:
                 # YouTube идёт напрямую через zapret — в VPN его не заворачиваем, а зовём перетестировать zapret
+                # (если zapret не установлен вовсе — YouTube идёт как любой сайт: в VPN, ниже)
                 if time.time() - state.get("yt_popup", 0) > 6 * 3600:
                     state["yt_popup"] = time.time()
                     say(f"YouTube напрямую не открывается ({host}) — похоже, стратегия zapret перестала работать.")
                     popup("YouTube перестал открываться напрямую — похоже, Роскомнадзор сломал стратегию zapret. "
-                          "Напишите Claude «перетестируй zapret».")
+                          + sovet("Напишите Claude «перетестируй zapret».", "Откройте «Сторож сети» → zapret → «Подобрать стратегию»."))
             elif need and not covered_by_vpn(host) and opt("avto_sayty"):
                 pending.add(suffix(host))
             time.sleep(1)
@@ -1263,8 +1537,7 @@ def main():
             save_json(STATE, state)
             os.remove(LOCK)  # замер сам берёт блокировку
             try:
-                r = run([sys.executable.replace("pythonw.exe", "python.exe"), os.path.join(HERE, "skorost_serverov.py"),
-                         "--apply"], timeout=1200)
+                r = run([_python(okno=False), os.path.join(HERE, "skorost_serverov.py"), "--apply"], timeout=1200)
                 with open(os.path.join(HERE, "skorost.log"), "a", encoding="utf-8") as f:
                     f.write(f"=== {now()}\n" + ((r.stdout + r.stderr) if r else "не завершился за 20 минут\n"))
             finally:
@@ -1315,6 +1588,11 @@ def main():
                 if pending_direct:
                     what.append("напрямую (через VPN сайт отказывает): " + ", ".join(pending_direct))
                 success, info = apply_changes(sorted(pending), bool(broken), lg, pending_direct)
+                for b in broken:
+                    if success:
+                        povt.pop(b, None)
+                    else:
+                        povt.setdefault(b, []).append(time.time())
                 if success:
                     state["pending_direct"] = []
                 state["restart_ts"] = time.time()
@@ -1326,6 +1604,7 @@ def main():
                 elif lists_pending and not state.get("registry_off"):
                     state["registry_off"] = True  # большой реестр не потянулся — дальше без него
                     say("Большой реестр РКН отключаю, в следующий раз внесу только списки сервисов.")
+        state["inv_fix"] = povt
         state["pending"] = sorted(pending)
         state["last_run"] = now()
         disk = load_json(STATE, {})  # данные о переключении сервера ведёт проверка VPN — не затирать
