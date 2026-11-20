@@ -10,6 +10,8 @@
   pult.py zamer                 — замерить все серверы и поставить лучший
   pult.py proverka              — проход сторожа сейчас
 Кнопку нажал человек, поэтому команды не ждут конца игры/звонка.
+Долгие команды (zamer, proverka, test-seti, proverit-sayt, sayt, vernut, primenit-marshruty, server,
+ustanovit-zadaniya) пишут ход в файл из переменной STOROZH_HOD — договор storozh-okno\\DOGOVOR-hod.md.
 """
 import json, os, re, sys, time, subprocess, traceback
 from datetime import datetime, timedelta
@@ -30,8 +32,36 @@ def log(m):
         pass
 
 
+# Ход долгих действий для окна (договор storozh-okno\DOGOVOR-hod.md): действие начинает ход (s.hod.nachat),
+# отмечает шаги, а конец пишет out() — с тем же ok, что уходит окну. ITOG — итог одной фразой: "ok" — при удаче,
+# "ne" — при неудаче (нет — берётся info ответа).
+ITOG = {}
+OCHERED = "Жду, пока сторож закончит свою проверку"
+PRAVKA_SHAGI = [OCHERED] + s.KARING_SHAGI
+PRAVKA_VESA = [1, 3, 2, 15, 10]          # примерные секунды шагов — пока нет истории прошлых запусков
+SERVER_SHAGI = ["Проверяю сервер в Karing", OCHERED] + s.KARING_SHAGI
+TEST_SHAGI = ["Качаю пробный файл через VPN", "Качаю пробный файл напрямую", "Записываю результат"]
+SAYT_SHAGI = ["Открываю сайт напрямую", "Открываю сайт через VPN", "Сравниваю"]
+ZADANIYA_SHAGI = ["Нахожу Python для заданий", "Создаю задания Windows", "Проверяю, что задания появились"]
+
+
 def out(obj):
+    try:
+        if s.hod.idet():
+            ok = obj.get("ok") is not False
+            s.hod.konec(ok, ITOG.get("ok" if ok else "ne") or obj.get("info") or ("Готово" if ok else "Не вышло"))
+    except Exception:
+        pass
     sys.stdout.buffer.write(json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+
+
+def mbayt(mbit):
+    """Мегабиты в секунду → мегабайты в секунду для человека (окно везде пишет МБ/с): 96 → «12», 9.5 → «1,2»."""
+    try:
+        v = float(mbit) / 8
+    except (TypeError, ValueError):
+        return "?"
+    return f"{v:.0f}" if v >= 10 else f"{v:.1f}".replace(".", ",")
 
 
 def nastroyki():
@@ -45,7 +75,7 @@ def clash(path):
     import urllib.request
     ctl, sec = s.clash()
     if not ctl:
-        raise s.KaringNet(s.karing_beda() or "в Karing не включён служебный вход (clash API) — обновите Karing")
+        raise s.KaringNet(s.karing_beda() or "в Karing не включён служебный вход — обновите Karing")
     req = urllib.request.Request("http://" + ctl + path, headers={"Authorization": "Bearer " + sec})
     op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
@@ -107,19 +137,24 @@ def sostoyanie():
     skor = {r[0]: r[1] for r in (st.get("speed_test") or {}).get("results", [])}
     games = s.game_running(st)
     bedy = []
+    karing_beda = None if karing else (s.karing_beda() or "Karing не работает")
     if not karing:
-        bedy.append(s.karing_beda() or "Karing не работает")
+        bedy.append(karing_beda)
     if not zapret:
-        # строка начинается с «zapret» — по ней окно ставит кнопку (подобрать стратегию / поставить zapret);
+        # строка начинается с «zapret» — по ней окно ставит кнопку (подобрать настройку обхода / поставить zapret);
         # поставлен ли он вообще — в ключе zapret_est
-        bedy.append("zapret не работает" if zapret_est else
-                    "zapret не установлен — без него YouTube и голос Discord напрямую не работают")
+        if zapret_est:
+            bedy.append("zapret не работает")
+        elif not nastroyki().get("zapret_ne_nuzhen"):   # «Не нужно» в списке настройки — больше не напоминаем
+            bedy.append("zapret не установлен — без него YouTube и голос Discord напрямую не работают")
     if s.curl_net():
         bedy.append("Нет программы curl.exe (она есть в Windows 10 и 11) — без неё сторож не проверяет сайты и не меряет скорость")
-    if not zadaniya_est():
+    zadaniya = zadaniya_est()
+    if not zadaniya:
         bedy.append("Сторож не запускается сам — включите проверку каждые 10 минут")
     if st.get("pending"):
         bedy.append("Пустить через VPN: " + ", ".join(st["pending"]) + " — напрямую не открывается или тормозит")
+    nas = nastroyki()
     out({
         "karing": karing, "zapret": zapret, "strategiya": strat, "zapret_est": zapret_est,
         "karing_est": os.path.isdir(s.KD) or bool(s.karing_exe()),
@@ -127,9 +162,56 @@ def sostoyanie():
         "posledniy": st.get("last_run"), "zamer": (st.get("speed_test") or {}).get("when"),
         "miganiya": miganiya_za_sutki(), "igra": games, "bedy": bedy,
         "otchet": tail(s.REPORT, 12), "mig_log": tail(os.path.join(HERE, "mignaniya.log"), 40),
-        "pult_log": tail(ZHURNAL, 40), "nastroyki": nastroyki(),
+        "pult_log": tail(ZHURNAL, 40), "nastroyki": nas,
         "stat": statistika(st),
+        "nastroyka": nastroyka_spisok(st, karing_beda, zadaniya, zapret, zapret_est, nas),
+        "nastroyka_skryta": bool(nas.get("nastroyka_skryta", False)),
+        "claude_znachok": claude_znachok(),
     })
+
+
+def nastroyka_spisok(st, karing_beda, zadaniya, zapret, zapret_est, nas):
+    """Список первичной настройки для новичка (договор, раздел 2): всегда 4 пункта в этом порядке."""
+    k_sovet = karing_beda or ""
+    if not k_sovet:
+        try:
+            est_servery = bool(s.candidates())
+        except Exception:
+            est_servery = False
+        nelzya = s.perezapusk_nelzya()
+        if not est_servery:
+            k_sovet = "в Karing нет серверов — добавьте подписку и обновите её"
+        elif nelzya and "автоматическое подключение" in nelzya:
+            k_sovet = ("в Karing выключено автоподключение после запуска — включите его в настройках Karing, "
+                       "иначе сторож не сможет перезапускать Karing")
+        elif nelzya:
+            k_sovet = nelzya
+    zamer_est = bool(st.get("fast_server")) and bool((st.get("speed_test") or {}).get("results"))
+    ne_nuzhen = bool(nas.get("zapret_ne_nuzhen"))
+    z_gotovo = bool(zapret) or ne_nuzhen
+    return [
+        {"id": "karing", "gotovo": not k_sovet, "tekst": "Karing найден, подписка есть, подключение включено", "sovet": k_sovet},
+        {"id": "zadaniya", "gotovo": bool(zadaniya), "tekst": "Сторож проверяет сеть сам, каждые 10 минут",
+         "sovet": "" if zadaniya else "Сейчас сторож работает, только пока открыто окно"},
+        {"id": "server", "gotovo": zamer_est, "tekst": "Выбран самый быстрый сервер",
+         "sovet": "" if zamer_est else "Замер идёт 2–5 минут, интернет пару раз моргнёт"},
+        {"id": "zapret", "gotovo": z_gotovo, "neobyaz": True, "tekst": "zapret: YouTube и голос Discord без VPN",
+         "sovet": "" if z_gotovo else ("zapret поставлен, но не работает — подберите настройку обхода. Не обязательно"
+                                       if zapret_est else "Не обязательно")},
+    ]
+
+
+def claude_znachok():
+    """Значок Claude в окне: показывать, только если сторож следит за Claude; ok — последний результат его проверки."""
+    pokazat = s.claude_vedu()
+    pr = s.load_json(s.CLAUDE_PROVERKA, None) or {}
+    ok, kogda = pr.get("ok"), pr.get("kogda")
+    if not isinstance(ok, bool) or not isinstance(kogda, (int, float)):
+        ok, proveren = None, ""
+    else:
+        proveren = datetime.fromtimestamp(kogda).strftime("%d.%m.%Y %H:%M")
+    server = (s.CLAUDE_PIN or s.current_vpn_server() or "") if pokazat else ""
+    return {"pokazat": pokazat, "server": server, "ok": ok, "proveren": proveren}
 
 
 def statistika(st):
@@ -249,9 +331,11 @@ def nastroyki_zadat(js):
 
 
 def s_zamkom(fn):
+    s.hod.shag(OCHERED)
     for _ in range(120):
         if not os.path.exists(s.LOCK) or time.time() - os.path.getmtime(s.LOCK) > 1800:
             break
+        s.hod.tekst(OCHERED + " — это до 6 минут")
         time.sleep(3)
     open(s.LOCK, "w").close()
     try:
@@ -264,16 +348,21 @@ def s_zamkom(fn):
 
 
 def primenit_marshruty():
+    s.hod.nachat("Маршруты программ", PRAVKA_SHAGI, "primenit-marshruty", PRAVKA_VESA)
     r = nastroyki()["marshruty"]
     ok, info = s_zamkom(lambda: s.apply_changes([], False, routes=r))
     s.say(("ИСПРАВЛЕНО. " if ok else "НЕ ВЫШЛО. ") + f"маршруты программ ({len(r)}). " + info)
     log(f"маршруты {r}: {ok} {info}")
+    ITOG["ok"] = f"Маршруты программ внесены в Karing (правил: {len(r)})"
     out({"ok": ok, "info": info})
 
 
 def sayt(domen, kuda):
     d = re.sub(r"^https?://", "", domen.strip().lower()).split("/")[0]
     d = s.suffix(d) if d.count(".") > 1 else d
+    kak = "через VPN" if kuda == "vpn" else "напрямую"
+    s.hod.nachat(f"Пускаю {d} {kak}", PRAVKA_SHAGI, "sayt", PRAVKA_VESA)
+    ITOG["ok"] = f"{d} теперь открывается {kak}"
     if kuda == "vpn":
         ok, info = s_zamkom(lambda: s.apply_changes([d], False))
     else:
@@ -286,17 +375,19 @@ def sayt(domen, kuda):
 
 
 def server(imya):
-    if imya != "AUTO":
-        beda = s.karing_beda() or s.perezapusk_nelzya()
-        if beda:
-            out({"ok": False, "info": beda, "seychas": s.fast_current()}); return
-        if imya not in s.vse_servery():
-            out({"ok": False, "info": f"сервера «{imya}» нет в Karing — обновите подписку в Karing", "seychas": s.fast_current()}); return
-    st = s.load_json(s.STATE, {})
-    prev = {"fast_server": st.get("fast_server"), "failover_fast": st.get("failover_fast")}
-    if imya == "AUTO":
+    if imya == "AUTO":   # «самый быстрый» — это замер: ход ведёт он, со своими шагами
+        import skorost_serverov as k
+        s.hod.nachat(k.CHTO, k.SHAGI, "zamer", k.VESA)
         s_zamkom(lambda: None)
         zamer(); return
+    s.hod.nachat(f"Смена сервера на {imya}", SERVER_SHAGI, "server", [1] + PRAVKA_VESA)
+    beda = s.karing_beda() or s.perezapusk_nelzya()
+    if beda:
+        out({"ok": False, "info": beda, "seychas": s.fast_current()}); return
+    if imya not in s.vse_servery():
+        out({"ok": False, "info": f"сервера «{imya}» нет в Karing — обновите подписку в Karing", "seychas": s.fast_current()}); return
+    st = s.load_json(s.STATE, {})
+    prev = {"fast_server": st.get("fast_server"), "failover_fast": st.get("failover_fast")}
     st["fast_server"] = imya
     st["failover_fast"] = None
     s.save_json(s.STATE, st)
@@ -304,6 +395,7 @@ def server(imya):
     if not ok:
         st = s.load_json(s.STATE, {}); st.update(prev); s.save_json(s.STATE, st)
     log(f"сервер {imya}: {ok}")
+    ITOG["ok"] = f"Выбран сервер {imya}"
     out({"ok": bool(ok), "seychas": s.fast_current(),
          **({} if ok else {"info": "переключение не удалось — через новый сервер связи нет, вернул как было"})})
 
@@ -330,6 +422,7 @@ def zamer():
 
 
 def proverka():
+    s.hod.nachat("Проверка сети", s.PROVERKA_SHAGI, "proverka", [3, 5, 60, 30, 20, 1])
     beda = s.karing_beda() or ("нет программы curl.exe (она есть в Windows 10 и 11) — сторож не может проверять сайты" if s.curl_net() else None)
     if beda:
         out({"ok": False, "info": beda, "otchet": tail(s.REPORT, 8)}); return
@@ -337,9 +430,37 @@ def proverka():
     st = s.load_json(s.STATE, {})
     st["probe_ts"] = 0   # проверить все программы сейчас, а не раз в час
     s.save_json(s.STATE, st)
+    zanyat = os.path.exists(s.LOCK) and time.time() - os.path.getmtime(s.LOCK) < 1800   # тогда s.main() сразу выйдет
+    try:
+        bylo = os.path.getsize(s.REPORT)
+    except OSError:
+        bylo = 0
     s.main()
     log("проверка по кнопке")
+    ITOG["ok"] = itog_proverki(bylo, zanyat)
     out({"ok": True, "otchet": tail(s.REPORT, 8)})
+
+
+def itog_proverki(bylo, zanyat):
+    """Итог прохода одной фразой — по строкам, что он дописал в отчёт."""
+    if zanyat:
+        return "Сторож уже сам проверяет сеть — итог появится в журнале через пару минут"
+    try:
+        with open(s.REPORT, "rb") as f:
+            f.seek(bylo)
+            novoe = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        novoe = []
+    stroki = [re.sub(r"^\[[^\]]*\]\s*", "", x).strip() for x in novoe if x.strip()]
+    isp = [x for x in stroki if x.startswith("ИСПРАВЛЕНО.")]
+    ne = [x for x in stroki if x.startswith("НЕ ВЫШЛО.")]
+    if ne:
+        return "Не вышло исправить: " + ne[-1][len("НЕ ВЫШЛО."):].strip()[:160]
+    if isp:
+        return "Исправлено: " + isp[-1][len("ИСПРАВЛЕНО."):].strip()[:160]
+    if stroki:
+        return stroki[-1][:180]
+    return "Всё в порядке — исправлять нечего"
 
 
 def _oem(args):
@@ -378,7 +499,7 @@ def set_seychas():
     time.sleep(2)
     b, vb = _netstat_bayty(), vpn_snap()
     if not a or not b:
-        out({"ok": False, "info": "netstat не ответил"}); return
+        out({"ok": False, "info": "Windows не ответила, сколько качает компьютер — попробуйте ещё раз"}); return
     vniz = max(0, (b[0] - a[0]) % (1 << 32)) / 2 / 1e6
     vverh = max(0, (b[1] - a[1]) % (1 << 32)) / 2 / 1e6
     out({"ok": True, "vniz": round(vniz, 2), "vverh": round(vverh, 2), "vpn": round(max(0, vb - va) / 2 / 1e6, 2)})
@@ -386,6 +507,7 @@ def set_seychas():
 
 def test_seti():
     """Тест скорости: 25 МБ с Cloudflare через VPN и напрямую, плюс задержка. Кнопку нажимает человек."""
+    s.hod.nachat("Тест скорости", TEST_SHAGI, "test-seti", [12, 12, 1])
     if s.curl_net():
         out({"ok": False, "info": "нет программы curl.exe (она есть в Windows 10 и 11) — мерить скорость нечем"}); return
     url = "https://speed.cloudflare.com/__down?bytes=25000000"
@@ -398,7 +520,9 @@ def test_seti():
             return {"mbit": round(float(p[1]) * 8 / 1e6, 1), "ping": round(float(p[2]) * 1000)}
         return {"mbit": 0, "ping": None}
     vpn = zamer(s.VPN) if s.port_up(s._PV) else {"mbit": 0, "ping": None}
+    s.hod.shag(1)
     pryamo = zamer(None)
+    s.hod.shag(2)
     st = s.load_json(s.STATE, {})
     ist = st.get("test_seti", [])[-19:]
     ist.append([datetime.now().strftime("%d.%m %H:%M"), vpn["mbit"], pryamo["mbit"]])
@@ -408,6 +532,8 @@ def test_seti():
     res = {"ok": True, "vpn": vpn, "pryamo": pryamo, "server": s.fast_current(), "istoriya": ist}
     if not vpn["mbit"]:
         res["info"] = s.karing_beda() or "через VPN ничего не скачалось — сервер не отвечает"
+    ITOG["ok"] = (f"Через VPN {mbayt(vpn['mbit'])} МБ/с" if vpn["mbit"] else f"Через VPN не скачалось ({res['info']})") \
+        + f", напрямую {mbayt(pryamo['mbit'])} МБ/с"
     out(res)
 
 
@@ -461,11 +587,11 @@ def servery_podrobno():
             if sk < 50:
                 if vid == "horoshiy":
                     vid, slovo = "nado_znat", "Медленный"
-                prichiny.append(f"скорость {sk} Мбит/с — ниже 50")
+                prichiny.append(f"скорость {mbayt(sk)} МБ/с — для фильмов и игр маловато")
             if ping and ping > 150:
-                prichiny.append(f"пинг {ping} мс — для игр и звонков много")
+                prichiny.append(f"отклик {ping} мс — для игр и звонков многовато")
         if not prichiny:
-            prichiny.append(f"{sk} Мбит/с, пинг {ping} мс, обрывов за сутки {obr}")
+            prichiny.append(f"работает ровно: обрывов за сутки {obr}")
         itog[imya] = {"vid": vid, "slovo": slovo, "prichiny": prichiny, "obryvov": obr, "minut": minut}
     return itog
 
@@ -481,9 +607,12 @@ def zadaniya_est():
 def ustanovit_zadaniya():
     """Задания Планировщика от текущего пользователя (без прав администратора): сторож каждые 10 мин и при входе.
     Запускает pythonw.exe, что лежит рядом с текущим Python (у друга — встроенный в папке программы)."""
+    s.hod.nachat("Включаю проверку каждые 10 минут", ZADANIYA_SHAGI, "ustanovit-zadaniya", [1, 3, 1])
     pyw = s._python(okno=True)
+    s.hod.shag(1)
     itog = []
-    for imya, skript, minut in ZADANIYA:
+    for i, (imya, skript, minut) in enumerate(ZADANIYA):
+        s.hod.schet(i, len(ZADANIYA), f"Создаю задания Windows: {i + 1} из {len(ZADANIYA)}")
         parts = skript.split(" ", 1)
         komanda = f'"{pyw}" "{os.path.join(HERE, parts[0])}"' + (" " + parts[1] if len(parts) > 1 else "")
         if len(komanda) > 261:   # больше Планировщик не принимает
@@ -493,7 +622,10 @@ def ustanovit_zadaniya():
         r = s.run(["schtasks", "/create", "/f", "/tn", imya, "/sc", "minute", "/mo", str(minut), "/tr", komanda])
         itog.append(f"{imya}: {'да' if r and r.returncode == 0 else 'нет'}")
     log("задания: " + ", ".join(itog))
+    s.hod.shag(2)
     ok = zadaniya_est()
+    ITOG["ok"] = "Сторож будет проверять сеть сам, каждые 10 минут"
+    ITOG["ne"] = "Windows не дала создать задания (" + ", ".join(itog) + ") — сторож работает, только пока открыто окно"
     out({"ok": ok, "info": ", ".join(itog)})
 
 
@@ -537,11 +669,14 @@ def skorosti():
 
 def proverit_sayt(domen):
     d = re.sub(r"^https?://", "", domen.strip().lower()).split("/")[0]
+    s.hod.nachat(f"Проверка сайта {d}", SAYT_SHAGI, "proverit-sayt", [3, 3, 1])
     if s.curl_net():
         out({"ok": False, "info": "нет программы curl.exe (она есть в Windows 10 и 11) — проверить сайт нечем"}); return
     url = "https://" + d + "/"
     kp, tp = s.direct(url, 12)
+    s.hod.shag(1)
     kv, tv = s.curl(url, s.VPN, 12)
+    s.hod.shag(2)
     def ocenka(k, t):
         if not s.ok(k):
             return "не открывается"
@@ -557,6 +692,7 @@ def proverit_sayt(domen):
     else:
         sovet = "не открывается нигде — похоже, сайт сам не работает"
     log(f"проверка сайта {d}: напрямую {kp} {tp:.1f} с, VPN {kv} {tv:.1f} с")
+    ITOG["ok"] = f"{d}: {sovet}"
     out({"ok": True, "domen": d, "napryamuyu": [kp, round(tp, 2), ocenka(kp, tp)], "vpn": [kv, round(tv, 2), ocenka(kv, tv)],
          "server": s.fast_current(), "sovet": sovet, "deystvie": deystvie, "uzhe_vpn": s.covered_by_vpn(d), "uzhe_napr": s.covered_by_direct(d)})
 
@@ -581,6 +717,8 @@ def sayty_istoriya():
 
 
 def vernut(domen):
+    s.hod.nachat(f"Возвращаю {domen} как было", PRAVKA_SHAGI, "vernut", PRAVKA_VESA)
+    ITOG["ok"] = f"{domen}: вернул как было"
     ok, info = s_zamkom(lambda: s.apply_changes([], False, remove=[domen]))
     s.say(("ИСПРАВЛЕНО. " if ok else "НЕ ВЫШЛО. ") + f"вернул как было: {domen} (вручную). " + info)
     log(f"вернуть {domen}: {ok} {info}")
@@ -682,7 +820,8 @@ def ponyatno(e):
         return s.karing_beda() or "Karing не отвечает — перезапустите его и повторите"
     if isinstance(e, PermissionError):
         return "нет доступа к файлу — папка сторожа только для чтения или файл занят другой программой (подробности в pult.log)"
-    return f"внутренняя ошибка сторожа: {e!r} (подробности в pult.log)"
+    log(f"внутренняя ошибка: {e!r}")
+    return "что-то пошло не так внутри сторожа — подробности в журнале (pult.log). Попробуйте ещё раз"
 
 
 KOMANDY = {  # команда: (функция, сколько параметров нужно)

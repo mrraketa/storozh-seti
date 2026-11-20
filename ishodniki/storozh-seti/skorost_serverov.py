@@ -9,6 +9,12 @@ from urllib.parse import urlparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # встроенный Python не кладёт папку скрипта в sys.path
 import storozh as s
 
+
+def mbayt(mbit):
+    """Мегабиты в секунду → мегабайты в секунду (окно везде пишет МБ/с)."""
+    v = float(mbit) / 8
+    return f"{v:.0f}" if v >= 10 else f"{v:.1f}".replace(".", ",")
+
 for _st in (sys.stdout, sys.stderr):  # из Планировщика вывод в cp1251 — флажки 🇫🇮 роняли замер
     try:
         _st.reconfigure(encoding="utf-8", errors="replace")
@@ -24,6 +30,12 @@ HOSTS = [  # (название, схема, настоящее имя, IP, пу�
 IPECHO = ("ifconfig.me", "https", "ifconfig.me", None, "/ip")   # отдаёт адрес выхода; по HTTPS — чтобы маршрут шёл по имени-двойнику, а не по заголовку Host
 IP_TRIES = 6
 MAX_SERVEROV = 20   # у друга в подписке может быть сотня серверов — меряем 20 самых отзывчивых, иначе замер на час
+
+# Ход замера для окна (договор storozh-okno\DOGOVOR-hod.md); пишется, только если окно дало STOROZH_HOD
+CHTO = "Замер серверов"
+SHAGI = ["Проверяю, что Karing готов к замеру", "Нахожу серверы подписки", "Готовлю Karing к замеру",
+         "Меряю скорость серверов", "Ставлю лучший сервер", "Проверяю, что интернет работает"]
+VESA = [3, 15, 20, 240, 20, 10]   # примерные секунды шагов — пока нет истории прошлых замеров
 
 
 def alias(i, ip):
@@ -77,10 +89,12 @@ def rezhim_pravila(vklyuchit, bylo=None):
 
 
 def restart():
+    s.hod.tekst("Перезапускаю Karing")
     s.karing_kill()
     t0 = time.time()
     if not s.karing_start():
         return False
+    s.hod.tekst("Жду, пока Karing подключится")
     return s.karing_wait(t0)
 
 
@@ -198,9 +212,18 @@ def predproverka():
 def zhivye():
     """Отвечающие серверы (параллельно), не больше MAX_SERVEROV самых быстрых по пингу; порядок — как в подписке."""
     from concurrent.futures import ThreadPoolExecutor
+    import threading
     tags = s.candidates()
+    gotovo, zamok = [0], threading.Lock()
+
+    def pingovat(t):
+        d = s.delay(t, 3000)
+        with zamok:   # счёт для окна: сколько серверов уже ответили или промолчали
+            gotovo[0] += 1
+            s.hod.schet(gotovo[0], len(tags), f"Проверяю, какие серверы отвечают: {gotovo[0]} из {len(tags)}")
+        return d
     with ThreadPoolExecutor(8) as ex:
-        d = dict(zip(tags, ex.map(lambda t: s.delay(t, 3000), tags)))
+        d = dict(zip(tags, ex.map(pingovat, tags)))
     zh = [t for t in tags if d.get(t)]
     if len(zh) > MAX_SERVEROV:
         luchshie = set(sorted(zh, key=lambda t: d[t])[:MAX_SERVEROV])
@@ -210,45 +233,54 @@ def zhivye():
 
 def main():
     global HOSTS, IPECHO
+    s.hod.nachat(CHTO, SHAGI, "zamer", VESA)   # из пульта («самый быстрый») ход уже начат — тогда ничего не меняет
     apply = "--apply" in sys.argv
     if s.game_running(s.load_json(s.STATE, {})):
-        print("запущена игра — не трогаю"); return
+        print("запущена игра — не трогаю")
+        s.hod.konec(False, "Идёт игра — замер отложен до её конца")
+        return
     beda = predproverka()
     if beda:
         print("ОШИБКА:", beda)
+        s.hod.konec(False, beda)
         return
     for _ in range(120):  # подождать, если сторож сейчас работает (блокировку старше 30 мин считаем брошенной)
         if not os.path.exists(s.LOCK) or time.time() - os.path.getmtime(s.LOCK) > 1800:
             break
+        s.hod.tekst("Жду, пока сторож закончит свою проверку — это до 10 минут")
         time.sleep(5)
     open(s.LOCK, "w").close()
     izmenil, backup, bylo_global = False, None, None
     try:
         backup = s._zapomnit()
+        s.hod.shag(1)
         HOSTS = resolve_hosts()
         ip = resolve_hosts_list([IPECHO])
         IPECHO = ip[0] if ip else None
         print("площадки:", [(h[0], h[3]) for h in HOSTS], "" if IPECHO else "(адрес выхода проверить не смогу)")
         if not HOSTS:
-            raise NeMenyal("не узнал адрес площадки для замера")
+            raise NeMenyal("не узнал адрес сайта, с которого качается пробный файл")
         servers = zhivye()
         print("живых серверов:", len(servers))
         if not servers:
             raise NeMenyal("ни один сервер Karing сейчас не отвечает — проверьте, что подписка обновлена и VPN в Karing включён")
         izmenil = True
+        s.hod.shag(2)
         set_test_groups(servers)
         bylo_global = rezhim_pravila(True)
         if bylo_global:
             print("Karing в режиме «Глобально» — на время замера включаю «Правила», потом верну")
         if not restart():
-            raise RuntimeError("Karing не поднялся после добавления тестовых правил")
+            raise RuntimeError("Karing не запустился после временной настройки для замера")
         v_konfige = pravilo_v_konfige(1, servers[0])
         chk = route_of(1)
         print(f"проверка правила: в конфиге Karing {'есть' if v_konfige else 'НЕТ'}; имя-двойник №1 ушло через {chk}, ожидался {servers[0]}")
         if not v_konfige and chk != servers[0]:
-            raise RuntimeError("Karing не применил тестовые правила — замер невозможен")
+            raise RuntimeError("Karing не принял временную настройку для замера — замер невозможен")
+        s.hod.shag(3)
         res = []
         for i, tag in enumerate(servers, 1):
+            s.hod.schet(i - 1, len(servers), f"Меряю скорость: {i} из {len(servers)} ({tag})")
             sp = [speed(i, h) for h in HOSTS]
             ping = s.delay(tag, 3000)
             ips = exit_ips(i)
@@ -264,6 +296,7 @@ def main():
         if pick[0] <= 0:
             raise RuntimeError("ни через один сервер не удалось ничего скачать — замер не удался")
         print("ВЫБРАН:", best, "(самый быстрый с постоянным адресом)" if stable else "(стабильных нет — самый быстрый)")
+        s.hod.shag(4, f"Ставлю лучший сервер: {best}")
         state = s.load_json(s.STATE, {})
         state["speed_test"] = {"when": s.now(), "results": [(t, round(m), p, len(ip) if ip is not None else 0) for m, _, p, t, ip in res]}
         s.save_json(s.STATE, state)
@@ -275,30 +308,38 @@ def main():
             state["fast_server"] = best
             s.save_json(s.STATE, state)
             s.assign_vpn_groups()
-        ok = restart() and s.svyaz_ok()
+        ok = restart()
+        if ok:
+            s.hod.shag(5)
+            ok = s.svyaz_ok()
         if s.claude_vedu():
             print("после перезапуска: Claude", "отвечает" if ok else "НЕ отвечает", "| Claude через", s.current_vpn_server())
         else:
             print("после перезапуска: VPN", "работает" if ok else "НЕ работает", "| сейчас через", s.fast_current())
         if not ok:
-            raise RuntimeError("после применения " + ("Claude не отвечает" if s.claude_vedu() else "VPN не работает"))
+            raise RuntimeError("после смены сервера " + ("Claude не отвечает" if s.claude_vedu() else "VPN не работает"))
         if apply and not s.CLAUDE_PIN and s.fast_current() != best:
             print(f"внимание: Karing после перезапуска идёт через {s.fast_current()}, а не через {best}")
         if s.claude_vedu():
             dop = " Назначен на всё, кроме Claude (Claude — " + s.home("claude") + ")."
         else:
             dop = " Назначен текущим сервером Karing."
-        s.say(f"Замер VPN-серверов: выбран {best} ({pick[0]:.0f} Мбит/с, адрес выхода {'постоянный' if stable else 'ПРЫГАЕТ — стабильных нет'}); "
+        s.say(f"Замер VPN-серверов: выбран {best} ({mbayt(pick[0])} МБ/с, адрес выхода {'постоянный' if stable else 'ПРЫГАЕТ — стабильных нет'}); "
               f"стабильных серверов {len(stable)} из {len(res)}." + (dop if apply else ""))
+        s.hod.konec(True, (f"Выбран {best}" if apply else f"Самый быстрый — {best}") + f", {mbayt(pick[0])} МБ/с"
+                    + ("" if stable else " (надёжных серверов нет — взял самый быстрый)"))
     except Exception as e:
         print("ОШИБКА:", e, "— возвращаю настройки как были" if izmenil else "— Karing не трогал")
         if izmenil:
+            s.hod.tekst("Не вышло — возвращаю настройки Karing как были")
             s.karing_kill()
             s._vernut(backup)
             t0 = time.time()
             s.karing_start()
             s.karing_wait(t0)
             print("возвращено, связь:", "есть" if s.svyaz_ok() else "НЕТ")
+        prichina = str(e) if isinstance(e, (RuntimeError, s.KaringNet)) and str(e) else "что-то пошло не так внутри замера — подробности в журнале замеров (skorost.log)"
+        s.hod.konec(False, f"Замер не удался: {prichina}" + (". Настройки Karing вернул как были" if izmenil else ""))
     finally:
         try:
             os.remove(s.LOCK)
@@ -307,4 +348,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:   # итог должен быть всегда; main сам пишет его на каждом выходе — это на непредвиденный случай
+        if s.hod.idet():
+            s.hod.konec(False, "Замер оборвался на полпути — подробности в журнале замеров")

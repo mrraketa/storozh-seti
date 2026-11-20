@@ -16,6 +16,15 @@ REPORT = os.path.join(HERE, "otchet.txt")
 BACKUP = os.path.join(HERE, "backup")
 LOCK = os.path.join(HERE, "run.lock")
 
+if HERE not in sys.path:   # встроенный Python не кладёт папку скрипта в sys.path — иначе hod.py не найдётся
+    sys.path.append(HERE)
+try:
+    import hod   # ход долгих действий для окна (договор storozh-okno\DOGOVOR-hod.md); пишет, только если окно дало STOROZH_HOD
+except Exception:   # выпуск без hod.py — ход просто не пишется, остальное работает как раньше
+    import types
+    hod = types.SimpleNamespace(nachat=lambda *a, **k: False, shag=lambda *a, **k: None, tekst=lambda *a, **k: None,
+                                schet=lambda *a, **k: None, konec=lambda *a, **k: None, idet=lambda: False)
+
 KD = os.path.join(os.environ.get("APPDATA") or os.path.expanduser(r"~\AppData\Roaming"), "karing", "karing")
 KEXE = os.path.join(os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or r"C:\Program Files",
                     "Karing", "karing.exe")   # обычное место; где Karing стоит на самом деле — karing_exe()
@@ -408,9 +417,28 @@ def karing_wait(t0):
     return False
 
 
+CLAUDE_PROVERKA = os.path.join(HERE, "claude-proverka.json")   # последний результат проверки Claude — для значка в окне
+
+
 def claude_ok():
     code, _ = curl("https://api.anthropic.com/v1/messages", RULES)
-    return code not in ("000", "403")
+    otvet = code not in ("000", "403")
+    _zapisat_tiho(CLAUDE_PROVERKA, {"ok": otvet, "kogda": time.time()})
+    return otvet
+
+
+def _zapisat_tiho(path, obj):
+    """Записать маленький файл атомарно и без ожиданий; не вышло — не беда (это только для окна)."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def claude_vedu():
@@ -525,6 +553,12 @@ def set_routes(groups, use, routes):
                                               "server_groupid": sg, "server_name": sn, "dns_servers": []})
 
 
+# Шаги любой правки Karing — пульт ставит их в список шагов своих действий (ход для окна), а apply_changes
+# и switch_roles отмечают их по имени. Нет такого шага в списке действия — меняется только подпись.
+KARING_SHAGI = ["Записываю настройки Karing", "Перезапускаю Karing", "Жду, пока Karing подключится", "Проверяю, что всё открывается"]
+KARING_OTKAT = "Не заработало — возвращаю прежние настройки Karing"
+
+
 def apply_changes(add_suffixes, fix_invariants, list_groups=None, add_direct=None, routes=None, remove=None):
     """Правит файлы Karing и перезапускает его. Возвращает (успех, описание).
     list_groups: {имя группы: множество доменов} — группы из списков блокировок, заменяются целиком."""
@@ -536,6 +570,7 @@ def apply_changes(add_suffixes, fix_invariants, list_groups=None, add_direct=Non
     if nelzya:
         return False, nelzya
     vedu_claude = claude_vedu()
+    hod.shag(KARING_SHAGI[0])
     saved = _zapomnit()
     karing_kill()
     try:
@@ -599,15 +634,21 @@ def apply_changes(add_suffixes, fix_invariants, list_groups=None, add_direct=Non
         save_json(os.path.join(KD, "karing_subscribe_use.json"), use)
         save_json(os.path.join(KD, "karing_setting.json"), st)
     except Exception as e:
+        hod.tekst("Не вышло записать — возвращаю прежние настройки Karing")
         _vernut(saved)
         karing_start()
-        return False, f"не смог поправить файлы Karing ({e}), вернул как было"
+        prichina = "файл занят другой программой или только для чтения" if isinstance(e, OSError) else "настройки Karing в непривычном виде"
+        return False, f"не смог записать настройки Karing ({prichina}) — вернул как было"
     t0 = time.time()
+    hod.shag(KARING_SHAGI[1])
     karing_start()
+    hod.shag(KARING_SHAGI[2])
     good = karing_wait(t0)
+    hod.shag(KARING_SHAGI[3])
     passed, checks = verify_after_restart() if good else (False, {"Karing запустился": False})
     if passed:
         return True, "проверка после перезапуска: " + ", ".join(f"{k} — да" for k in checks)
+    hod.tekst(KARING_OTKAT)
     karing_kill()
     _vernut(saved)
     t1 = time.time()
@@ -754,9 +795,10 @@ def invariants_broken():
     bad = []
     dns = st.get("dns") or {}
     if (dns.get("ttl") or 0) > DNS_TTL:
-        bad.append(f"кэш DNS {dns['ttl'] // 3600} ч (CDN вроде Akamai меняют узлы — магазин Steam висел)")
+        srok = f"{dns['ttl'] // 3600} ч" if dns["ttl"] >= 3600 else f"{dns['ttl'] // 60} мин"
+        bad.append(f"Karing слишком долго помнит адреса сайтов ({srok}) — магазин Steam и другие сайты могут не грузиться")
     if not dns.get("enable_inbound_domain_resolve"):
-        bad.append("выключено определение адресов (правило Cloudflare не работает)")
+        bad.append("в Karing выключено определение адресов сайтов — часть правил не срабатывает")
     if not claude_vedu():
         return bad   # у друга Claude не закреплён и своей группы нет — правила про Claude не проверяем
     cl = [g for g in use.get("diversion_group", []) if g.get("diversion_name") == "Claude"]
@@ -910,7 +952,9 @@ def sample_check(state, n=15):
                 + (f", пришлось добавить в VPN: {', '.join(st['fixed'])}" if st["fixed"] else "") + ".")
         st.update(checked=0, ok=0, dead=0, fixed=[], to_direct=[], day=today)
     need = set()
-    for d in random.sample(pool, min(n, len(pool))):
+    vybor = random.sample(pool, min(n, len(pool)))
+    for i, d in enumerate(vybor):
+        hod.schet(i, len(vybor), f"Проверяю адреса из списков блокировок: {i + 1} из {len(vybor)}")
         code, _ = curl(f"https://{d}/", RULES, t=8)
         st["checked"] += 1
         if code in REFUSE and not covered_by_direct(d) and not NEVER_DIRECT.search(d):
@@ -1197,12 +1241,16 @@ def switch_roles(why, revert=None, claude_moves=True):
         say(f"{why} Не переключаю: {nelzya}.")
         return False
     vedu_claude = claude_vedu()
+    hod.shag(KARING_SHAGI[0])
     saved = _zapomnit()
     karing_kill()
     assign_vpn_groups()
     t0 = time.time()
+    hod.shag(KARING_SHAGI[1])
     karing_start()
+    hod.shag(KARING_SHAGI[2])
     up = karing_wait(t0)
+    hod.shag(KARING_SHAGI[3])
     c_ok = up and svyaz_ok()
     fc = fast_current() if up else None
     good = c_ok or (up and not claude_moves and fc is not None and delay(fc, 3000) is not None)
@@ -1213,6 +1261,7 @@ def switch_roles(why, revert=None, claude_moves=True):
         else:
             say(f"{why} Сейчас через VPN — {fc}. " + ("VPN работает." if c_ok else "Сервер отвечает."))
         return True
+    hod.tekst(KARING_OTKAT)
     karing_kill()
     _vernut(saved)
     t1 = time.time()
@@ -1302,7 +1351,7 @@ def vpn_check():
                     return
                 state["hang_restarts"] = recent + [time.time()]
                 save_json(STATE, state)
-                with_lock(lambda: switch_roles("Karing завис (ядро не отвечает), перезапустил."))
+                with_lock(lambda: switch_roles("Karing завис и перестал отвечать — перезапустил."))
                 return
             save_json(STATE, state)
             return
@@ -1391,16 +1440,22 @@ def vpn_check():
 
 # ---------- главный проход ----------
 
+# Шаги прохода для окна (кнопка «Проверить сейчас» = pult.py proverka). Плановый проход хода не пишет.
+PROVERKA_SHAGI = ["Проверяю, что Karing работает", "Проверяю настройки Karing", "Проверяю сайты и программы",
+                  "Проверяю списки блокировок", "Исправляю Karing, если нужно", "Записываю итог"]
+
+
 def main():
     if os.path.exists(LOCK) and time.time() - os.path.getmtime(LOCK) < 1800:
         return
     open(LOCK, "w").close()
     try:
-        for fn in (firewall_gaps, uk_proxy_watch):  # до загрузки state: пишут в него сами, иначе main затрёт
-            try:
+        hod.shag(PROVERKA_SHAGI[0])
+        for fn, imya in ((firewall_gaps, "защиты «Claude только через Karing»"), (uk_proxy_watch, "личного прокси")):
+            try:   # до загрузки state: пишут в него сами, иначе main затрёт
                 fn()
             except Exception as e:
-                say(f"Проверка {fn.__name__} упала: {e}")
+                say(f"Проверка {imya} упала: {e}")
         state = load_json(STATE, {})
         pending = set(state.get("pending", []))
         notes = []
@@ -1457,9 +1512,10 @@ def main():
             state["global_popup"] = 0
 
         # 2. Главные условия: Claude через VPN и режим «по правилам»
+        hod.shag(PROVERKA_SHAGI[1])
         broken = invariants_broken()
         if claude_vedu() and not claude_ok():
-            broken.append("Claude не отвечает по правилам Karing")
+            broken.append("Claude не открывается через Karing")
         # поломку, которую 6 раз подряд не удалось починить, дальше чиним не чаще раза в 2 часа (а не каждые 10 минут);
         # удачная починка обнуляет счёт — то, что лечится, лечится как раньше
         povt = {k: [t for t in v if time.time() - t < 86400] for k, v in (state.get("inv_fix") or {}).items()}
@@ -1478,12 +1534,14 @@ def main():
             state["zapret_popup"] = time.time()
             say("Служба zapret не работает — YouTube и голос Discord напрямую не пойдут.")
             popup("Служба zapret не работает — YouTube и голос в Discord сейчас не пойдут. "
-                  + sovet("Напишите Claude «проверь zapret».", "Откройте «Сторож сети» → zapret → «Подобрать стратегию»."))
+                  + sovet("Напишите Claude «проверь zapret».", "Откройте «Сторож сети», раздел zapret, и подберите настройку обхода."))
 
+        hod.shag(PROVERKA_SHAGI[2])
         candidates = {h for h, n in log_failures(state).items() if n >= 2}
         if time.time() - state.get("probe_ts", 0) > 3600:
             state["probe_ts"] = time.time()
-            for name, url in PROBES:
+            for i, (name, url) in enumerate(PROBES):
+                hod.schet(i, len(PROBES), f"Проверяю программы: {i + 1} из {len(PROBES)} ({name})")
                 code, t = curl(url, RULES)
                 host = url.split("/")[2]
                 if not ok(code) or t > 3:
@@ -1495,6 +1553,7 @@ def main():
             if host in known and time.time() - last < 6 * 3600:
                 continue
             state.setdefault("checked_hosts", {})[host] = time.time()
+            hod.tekst(f"Проверяю, открывается ли {host}")
             need, why = needs_vpn(host)
             if why:
                 notes.append(why)
@@ -1503,9 +1562,9 @@ def main():
                 # (если zapret не установлен вовсе — YouTube идёт как любой сайт: в VPN, ниже)
                 if time.time() - state.get("yt_popup", 0) > 6 * 3600:
                     state["yt_popup"] = time.time()
-                    say(f"YouTube напрямую не открывается ({host}) — похоже, стратегия zapret перестала работать.")
-                    popup("YouTube перестал открываться напрямую — похоже, Роскомнадзор сломал стратегию zapret. "
-                          + sovet("Напишите Claude «перетестируй zapret».", "Откройте «Сторож сети» → zapret → «Подобрать стратегию»."))
+                    say(f"YouTube напрямую не открывается ({host}) — похоже, настройка обхода zapret перестала работать.")
+                    popup("YouTube перестал открываться напрямую — похоже, Роскомнадзор сломал настройку обхода zapret. "
+                          + sovet("Напишите Claude «перетестируй zapret».", "Откройте «Сторож сети», раздел zapret, и подберите настройку обхода заново."))
             elif need and not covered_by_vpn(host) and opt("avto_sayty"):
                 pending.add(suffix(host))
             time.sleep(1)
@@ -1519,8 +1578,10 @@ def main():
         state["steam_last"] = s
 
         # 5. Списки блокировок РФ: раз в сутки обновить, каждый запуск проверить несколько адресов
+        hod.shag(PROVERKA_SHAGI[3])
         if opt("avto_spiski") and time.time() - state.get("lists_ts", 0) > 86400:
             state["lists_ts"] = time.time()
+            hod.tekst("Обновляю списки заблокированного в РФ (раз в сутки)")
             if refresh_lists():
                 state["lists_pending"] = True
                 notes.append("Списки заблокированного в РФ обновились — внесу в Karing")
@@ -1535,6 +1596,7 @@ def main():
             state["speed_ts"] = time.time()
             state["speed_now"] = False
             save_json(STATE, state)
+            hod.tekst("Меряю скорость серверов (раз в сутки) — это займёт несколько минут")
             os.remove(LOCK)  # замер сам берёт блокировку
             try:
                 r = run([_python(okno=False), os.path.join(HERE, "skorost_serverov.py"), "--apply"], timeout=1200)
@@ -1558,6 +1620,7 @@ def main():
 
         # 5. Применить, если есть что и можно
         # то, что и так уже идёт через VPN, не повод перезапускать Karing
+        hod.shag(PROVERKA_SHAGI[4])
         pending = {p for p in pending if not covered_by_vpn(p)}
         lists_pending = state.get("lists_pending", False)
         pending_direct = sorted({suffix(d) for d in state.get("pending_direct", [])
@@ -1604,6 +1667,7 @@ def main():
                 elif lists_pending and not state.get("registry_off"):
                     state["registry_off"] = True  # большой реестр не потянулся — дальше без него
                     say("Большой реестр РКН отключаю, в следующий раз внесу только списки сервисов.")
+        hod.shag(PROVERKA_SHAGI[5])
         state["inv_fix"] = povt
         state["pending"] = sorted(pending)
         state["last_run"] = now()

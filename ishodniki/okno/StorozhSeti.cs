@@ -55,6 +55,9 @@ static class Programma
         // точная последовательность Коробки (встал во вкладку → другая вкладка → назад → «Вынуть окно») за экраном
         int iV = Array.IndexOf(args, "--proba-vynos");
         if (iV >= 0 && iV + 1 < args.Length) { Environment.ExitCode = Okno.ProbaVynos(args[iV + 1], true); return; }
+        // как окно поймёт файл хода сторожа (сверка со storozh-seti\hod.py): тексты карточки в консоль
+        int iH = Array.IndexOf(args, "--proba-hoda");
+        if (iH >= 0 && iH + 1 < args.Length) { Environment.ExitCode = Okno.ProbaHoda(args[iH + 1]); return; }
         if (Array.IndexOf(args, "--samoproverka") >= 0) { try { Environment.ExitCode = Okno.Samoproverka(); } catch (Exception e) { Console.WriteLine("ОШИБКА: " + e); Environment.ExitCode = 99; } return; }
         if (Array.IndexOf(args, "--test-klik") >= 0) { try { Environment.ExitCode = Okno.TestKlik(); } catch (Exception e) { Console.WriteLine("ОШИБКА: " + e); Environment.ExitCode = 99; } return; }
         bool novaya;
@@ -130,7 +133,13 @@ static class Pult
         int n; return m.Success && int.TryParse(m.Groups[1].Value, out n) ? n : 0;
     }
 
-    public static Dictionary<string, object> Vyzov(params string[] arg)
+    // действия, которые пишут ход в файл (DOGOVOR-hod.md): им окно даёт путь в STOROZH_HOD
+    public static readonly HashSet<string> S_HODOM = new HashSet<string> { "zamer", "proverka", "test-seti", "proverit-sayt", "sayt", "vernut", "primenit-marshruty", "server", "ustanovit-zadaniya" };
+
+    public static Dictionary<string, object> Vyzov(params string[] arg) { return VyzovH(null, arg); }
+
+    // hod — полный путь к файлу хода (только для действий из S_HODOM); null — ход не нужен
+    public static Dictionary<string, object> VyzovH(string hod, string[] arg)
     {
         string kom = arg.Length > 0 ? arg[0] : "";
         if (Poddelka != null)
@@ -152,6 +161,7 @@ static class Pult
             StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = Papka
         };
         psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+        if (hod != null && S_HODOM.Contains(kom)) psi.EnvironmentVariables["STOROZH_HOD"] = hod;
         var vyhod = new StringBuilder(); var oshibki = new StringBuilder();
         var konecVyhoda = new ManualResetEvent(false);
         Process p;
@@ -163,7 +173,7 @@ static class Pult
             p.Start();
             p.BeginOutputReadLine(); p.BeginErrorReadLine();
         }
-        catch (Exception e) { return Oshibka("не смог запустить Python (" + Python + "): " + e.Message); }
+        catch (Exception e) { return Oshibka("не смог запустить сторожа: Python не запустился (" + Python + "): " + e.Message); }
         using (p)
         {
             // чтение и проверки — со сроком: зависший пульт не должен держать окно «занятым» навсегда.
@@ -172,7 +182,7 @@ static class Pult
             if (!p.WaitForExit(srok))
             {
                 try { p.Kill(); } catch { }
-                return Oshibka("пульт не ответил за " + srok / 1000 + " с (" + kom + ")");
+                return Oshibka("сторож не ответил за " + Okno.Vremya(srok / 1000) + " (команда " + kom + ")");
             }
             konecVyhoda.WaitOne(3000);   // программа, запущенная пультом, может держать вывод — ждём недолго
             string o, err;
@@ -188,7 +198,7 @@ static class Pult
         if (stroka != null)
             try { var d = js.Deserialize<Dictionary<string, object>>(stroka); if (d != null) return d; } catch { }
         string posl = (err ?? "").Trim().Split('\n').Select(x => x.Trim()).LastOrDefault(x => x != "") ?? "";
-        return Oshibka("пульт не ответил" + (posl != "" ? ": " + posl : ""));
+        return Oshibka("сторож не ответил" + (posl != "" ? ": " + posl : ""));
     }
 
     public static Dictionary<string, object> Oshibka(string info, bool netPython = false)
@@ -200,7 +210,7 @@ static class Pult
 
     // ответ — ошибка пульта (а не данные): пусто или {"ok": false, ...}
     public static bool Sboy(Dictionary<string, object> d) { object v; return d == null || (d.TryGetValue("ok", out v) && v is bool && !(bool)v); }
-    public static string Info(Dictionary<string, object> d) { var t = S(d, "info"); return t != "" ? t : "пульт не ответил"; }
+    public static string Info(Dictionary<string, object> d) { var t = S(d, "info"); return t != "" ? t : "сторож не ответил"; }
 
     public static string Json(object o) { return js.Serialize(o); }
 
@@ -235,6 +245,85 @@ static class Pult
     }
     public static int Cel(object v) { double d = Ch(v); return d > int.MaxValue ? int.MaxValue : d < int.MinValue ? int.MinValue : (int)Math.Round(d); }
     public static object El(IList<object> l, int i) { return l != null && i >= 0 && i < l.Count ? l[i] : null; }
+
+    // число или null: null, логическое, строка-не-число — «не знаем» (а не 0)
+    public static double? ChIliNet(object v)
+    {
+        if (v == null || v is bool) return null;
+        if (v is string)
+        {
+            double r;
+            return double.TryParse((string)v, NumberStyles.Float, CultureInfo.InvariantCulture, out r) ? r : (double?)null;
+        }
+        try { return Convert.ToDouble(v, CultureInfo.InvariantCulture); } catch { return null; }
+    }
+}
+
+// ---------- ход долгого действия (DOGOVOR-hod.md) ----------
+// Что окно запустило (Chto, начало) и что сторож пишет в файл хода (Fayl). Fayl == null — сторож ход не пишет
+// (старая версия или ещё не начал): карточка тогда показывает «идёт…» и сколько прошло, без процентов.
+class Hod
+{
+    public string Chto = "";
+    public string Put;                       // файл хода
+    public DateTime Nachalo = DateTime.Now;
+    public bool Idet = true;                 // процесс ещё работает
+    public DateTime Konec;
+    public bool? Ok;
+    public string Itog = "";
+    public Dictionary<string, object> Fayl;  // последнее удачно прочитанное
+
+    static readonly DateTime EPOHA = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    public static double Seychas() { return (DateTime.UtcNow - EPOHA).TotalSeconds; }
+
+    public string Nazvanie { get { var c = Pult.Chisto(Pult.G(Fayl, "chto") as string ?? "").Trim(); return c != "" ? c : Chto; } }
+    public List<string> Shagi
+    {
+        get
+        {
+            var l = Pult.L(Fayl, "shagi").ToList();
+            return l.Select((x, i) => { var t = Pult.Chisto(x as string ?? "").Trim(); return t != "" ? t : "Шаг " + (i + 1); }).ToList();
+        }
+    }
+    public int Shag { get { var v = Pult.ChIliNet(Pult.G(Fayl, "shag")); return v == null ? 0 : (int)Math.Max(0, Math.Min(1000, v.Value)); } }
+    public int? Procent { get { var v = Pult.ChIliNet(Pult.G(Fayl, "procent")); return v == null ? (int?)null : (int)Math.Round(Math.Max(0, Math.Min(100, v.Value))); } }
+    public int? Ostalos { get { var v = Pult.ChIliNet(Pult.G(Fayl, "ostalos")); return v == null || v.Value < 0 ? (int?)null : (int)Math.Round(Math.Min(v.Value, 360000)); } }
+    public bool KonecVFayle { get { return Pult.B(Fayl, "konec"); } }
+    // текущий шаг: подробность сторожа целой фразой («Меряю скорость: 7 из 14», «Проверяю general (ALT13): 3 из 19»);
+    // нет её — название шага. Склеивать «шаг: подробность» нельзя — выходит «Проверяю … по очереди: Проверяю …».
+    public string TekstShaga(int i)
+    {
+        var sh = Shagi; string nazv = i >= 0 && i < sh.Count ? sh[i] : "";
+        string t = Pult.Chisto(Pult.G(Fayl, "tekst") as string ?? "").Trim();
+        return t != "" ? t : nazv;
+    }
+    public int Proshlo { get { return (int)Math.Max(0, ((Idet ? DateTime.Now : Konec) - Nachalo).TotalSeconds); } }
+    // сколько секунд сторож не обновлял файл (0 — файла нет или действие кончилось)
+    public int Molchit
+    {
+        get
+        {
+            var o = Pult.ChIliNet(Pult.G(Fayl, "obnovleno"));
+            if (Fayl == null || KonecVFayle || o == null || o.Value <= 0) return 0;
+            return (int)Math.Max(0, Math.Round(Seychas() - o.Value));   // с округлением: 99,99 с — это «1 мин 40 с», а не 39
+        }
+    }
+    public bool Zavis { get { return Idet && Molchit > 90; } }
+
+    // конец: ответ пульта (или скрипта) + последнее, что написал сторож. Успех — по ответу; слова — сторожа, если он их дал.
+    public void Zakonchit(Dictionary<string, object> otvet)
+    {
+        Idet = false; Konec = DateTime.Now;
+        bool ok = !Pult.Sboy(otvet) && Pult.B(otvet, "ok");
+        string fItog = KonecVFayle ? Pult.Chisto(Pult.G(Fayl, "itog") as string ?? "").Trim() : "";
+        Ok = ok;
+        if (ok)
+        {
+            string seychas = Pult.Chisto(Pult.G(otvet, "seychas") as string ?? "").Trim(), info = Pult.Chisto(Pult.G(otvet, "info") as string ?? "").Trim();
+            Itog = fItog != "" ? fItog : info != "" ? info : seychas != "" ? "Сейчас сервер: " + seychas : "";
+        }
+        else Itog = fItog != "" && !Pult.B(Fayl, "ok") ? fItog : Pult.Chisto(Pult.Info(otvet));
+    }
 }
 
 // ---------- окно ----------
@@ -246,7 +335,7 @@ partial class Okno : Form
     public static void Vpered(IntPtr h) { ShowWindow(h, 9); SetForegroundWindow(h); }
 
     static readonly string ZHURNAL = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "storozh-okno.log");
-    static readonly Color Zel = Color.FromArgb(46, 160, 90), Kras = Color.FromArgb(214, 72, 64), Zhelt = Color.FromArgb(214, 150, 40);
+    internal static readonly Color Zel = Color.FromArgb(46, 160, 90), Kras = Color.FromArgb(214, 72, 64), Zhelt = Color.FromArgb(214, 150, 40), Sery = Color.FromArgb(150, 150, 160);
 
     // проверки (самопроверка, нажатия, пробы): окно за экраном, без кнопки на панели задач, без значка в трее, фокус не берёт
     static bool proba;
@@ -312,7 +401,8 @@ partial class Okno : Form
             FormClosed += (s, e) => { if (trey != null) trey.Dispose(); };
             Taymer(60000, () => { if (!zanyat) Obnovit(); });
             Taymer(5000, ObnovitSkorosti);
-            Taymer(1500, () => { if (zanyat && tekushchaya == "zapret") ObnovitHod(); });
+            Taymer(1500, () => { if (zanyat && tekushchaya == "zapret") ObnovitZhurnalSkripta(); });
+            Taymer(700, TikHoda);   // ход долгого действия: файл сторожа -> карточка вверху страницы
             Zapis("запуск; пульт: " + Pult.Papka + "; python: " + (Pult.Python ?? "НЕ НАЙДЕН") + "; админ: " + Admin());
         }
         Otkryt("glavnaya");
@@ -373,31 +463,137 @@ partial class Okno : Form
 
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
 
-    void Deystvie(string chto, string[] arg, Action<Dictionary<string, object>> itog)
+    // Долгое действие: карточка хода вверху страницы, пульт в фоне, потом обновить. false — не начато (идёт другое / проверка).
+    bool Deystvie(string chto, string[] arg, Action<Dictionary<string, object>> itog)
     {
-        if (suho) { Zapis("[тест] нажато: " + chto); return; }
-        if (zanyat) { MessageBox.Show(this, "Сначала дождитесь конца: " + deystvieSeychas + ".", "Сторож сети"); return; }
+        if (suho) { Zapis("[тест] нажато: " + chto); return false; }
+        if (zanyat) { NeSeychas(); return false; }
         zanyat = true; deystvieSeychas = chto;
-        zanyatoStroka.Text = "Идёт: " + chto + "…";
+        var h = NachatHod(chto, true);
         Zapis("начал: " + chto + " " + string.Join(" ", arg));
         ThreadPool.QueueUserWorkItem(_ =>
         {
-            var d = Pult.Vyzov(arg);
+            var d = Pult.VyzovH(h.Put, arg);
             try
             {
                 BeginInvoke((Action)(() =>
                 {
                     zanyat = false;
-                    bool ok = !Pult.Sboy(d) && Pult.B(d, "ok");
-                    zanyatoStroka.Text = (ok ? "Готово: " : "Не вышло: ") + chto + (Pult.S(d, "info") != "" ? " — " + Pult.S(d, "info") : "");
-                    Zapis(zanyatoStroka.Text);
+                    ZakonchitHod(h, d);
                     if (itog != null) itog(d);
                     Obnovit();
                 }));
             }
             catch { }
         });
+        return true;
     }
+
+    // уже что-то идёт: второе действие не начинаем, а говорим, что идёт (карточка хода и так вверху)
+    void NeSeychas() { zanyatoStroka.Text = "Сейчас идёт «" + deystvieSeychas + "» — дождитесь конца (ход — вверху страницы), потом нажмите ещё раз."; }
+
+    // ---------- ход долгого действия (DOGOVOR-hod.md) ----------
+    internal static readonly string HOD_FAYL = Path.Combine(Path.GetTempPath(), "storozh-seti-hod.json");
+    // проверки пишут свой файл: настоящий (окна в Коробке) не трогаем
+    static readonly string HOD_PROBA = Path.Combine(Path.GetTempPath(), "storozh-seti-hod-proba-" + Process.GetCurrentProcess().Id + ".json");
+    internal Hod hod;              // null — карточки нет
+    KartaHoda kartaHoda;           // карточка на текущей странице
+    bool kNachalu;                 // следующая перестройка — без восстановления прокрутки (показать карточку хода)
+
+    // новое действие: старый файл хода удалить (иначе окно показало бы прошлый ход), карточку показать сразу
+    Hod NachatHod(string chto, bool udalitFayl)
+    {
+        if (udalitFayl) try { if (File.Exists(HOD_FAYL)) File.Delete(HOD_FAYL); } catch (Exception e) { Zapis("файл хода не удалился: " + e.Message); }
+        hod = new Hod { Chto = chto, Put = HOD_FAYL };
+        kNachalu = true;   // 21.11: нажали кнопку внизу прокрученной страницы — карточка хода вверху была бы не видна
+        zanyatoStroka.Text = "Идёт: " + chto + " — ход вверху страницы";
+        Perestroit();
+        return hod;
+    }
+
+    void ZakonchitHod(Hod h, Dictionary<string, object> otvet)
+    {
+        var d = ProchitatHod(h.Put);
+        if (d != null) h.Fayl = d;
+        h.Zakonchit(otvet);
+        if (zanyatoStroka.Text.StartsWith("Идёт: ")) zanyatoStroka.Text = (h.Ok == true ? "Готово: " : "Не вышло: ") + h.Chto + " — итог вверху страницы";
+        Zapis((h.Ok == true ? "Готово: " : "Не вышло: ") + h.Chto + (h.Itog != "" ? " — " + h.Itog : "") + " (заняло " + Vremya(h.Proshlo) + ")");
+        if (h == hod && kartaHoda != null && !kartaHoda.IsDisposed) kartaHoda.Pokazat(h);
+    }
+
+    // Файл хода читается, пока сторож его пишет: без блокировки (ReadWrite | Delete) и быстро; любая ошибка — пропуск (null).
+    internal static Dictionary<string, object> ProchitatHod(string put)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(put) || !File.Exists(put)) return null;
+            byte[] b;
+            using (var f = new FileStream(put, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                if (f.Length > 1000000) return null;
+                b = new byte[f.Length];
+                int n = 0;
+                while (n < b.Length) { int r = f.Read(b, n, b.Length - n); if (r <= 0) break; n += r; }
+            }
+            var t = Encoding.UTF8.GetString(b).TrimStart('\uFEFF').Trim();
+            if (!t.StartsWith("{")) return null;
+            return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Deserialize<Dictionary<string, object>>(t);
+        }
+        catch { return null; }
+    }
+
+    void TikHoda()
+    {
+        if (hod == null || !hod.Idet) return;
+        var d = ProchitatHod(hod.Put);
+        if (d != null) hod.Fayl = d;
+        if (kartaHoda != null && !kartaHoda.IsDisposed) kartaHoda.Pokazat(hod);
+    }
+
+    // карточка хода — первой на странице (на любой странице, пока действие идёт или итог не закрыт)
+    void VstavitKartuHoda(Panel str)
+    {
+        kartaHoda = null;
+        if (hod == null || !(str is FlowLayoutPanel)) return;
+        var kh = new KartaHoda { Width = Shir, Margin = new Padding(0, 0, 0, 12) };
+        kh.Zakryt.Click += (s, e) => { Zapis("кнопка: закрыть итог «" + (hod != null ? hod.Chto : "") + "»"); if (hod != null && !hod.Idet) hod = null; Perestroit(); };
+        podskazki.SetToolTip(kh.Zakryt, "Закрыть");
+        kh.Pokazat(hod);
+        str.Controls.Add(kh);
+        str.Controls.SetChildIndex(kh, 0);
+        kartaHoda = kh;
+    }
+
+    // проверки: ход из набора подделки ("~hod") — через настоящий файл и настоящее чтение
+    void PoddelnyyHod(string json)
+    {
+        Dictionary<string, object> d;
+        try { d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json); } catch { return; }
+        if (d == null) return;
+        double proshlo = Pult.ChIliNet(Pult.G(d, "proshlo")) ?? 0;
+        var h = new Hod { Chto = Pult.G(d, "chto") as string ?? "", Put = HOD_PROBA, Nachalo = DateTime.Now.AddSeconds(-proshlo) };
+        try { if (File.Exists(HOD_PROBA)) File.Delete(HOD_PROBA); } catch { }
+        var f = Pult.G(d, "fayl");
+        try
+        {
+            if (f is Dictionary<string, object>)
+            {
+                var fd = new Dictionary<string, object>((Dictionary<string, object>)f);
+                double nazad = Pult.ChIliNet(Pult.G(fd, "obnovleno_nazad")) ?? 0;
+                fd.Remove("obnovleno_nazad");
+                fd["nachalo"] = Hod.Seychas() - proshlo;
+                fd["obnovleno"] = Hod.Seychas() - nazad;
+                File.WriteAllText(HOD_PROBA, Pult.Json(fd), new UTF8Encoding(false));
+            }
+            else if (f is string) File.WriteAllText(HOD_PROBA, (string)f, new UTF8Encoding(false));
+        }
+        catch { }
+        h.Fayl = ProchitatHod(HOD_PROBA);
+        hod = h;
+        if (!Pult.B(d, "idet")) h.Zakonchit(Pult.D(Pult.G(d, "otvet")));
+    }
+
+    static void UbratProbu() { try { if (File.Exists(HOD_PROBA)) File.Delete(HOD_PROBA); } catch { } }
 
     void Otkryt(string id)
     {
@@ -433,6 +629,7 @@ partial class Okno : Form
             var f = NaytiFokus(staraya);
             if (f != null) { fokus = f.Name; if (f is TextBox) kursor = ((TextBox)f).SelectionStart; }
         }
+        if (kNachalu) { prokrutka = Point.Empty; kNachalu = false; }
         var starye = soderzh.Controls.Cast<Control>().ToArray();
         oshibkaRazdela = false;
         zhivye.Clear();
@@ -453,6 +650,7 @@ partial class Okno : Form
                 case "nastroyki": p = StrNastroyki(); break;
                 default: p = StrGlavnaya(); break;
             }
+            VstavitKartuHoda(p);
             p.Dock = DockStyle.Fill;
             soderzh.Controls.Add(p);
             postroennaya = tekushchaya;
@@ -604,6 +802,9 @@ partial class Okno : Form
             saytProverka = null;
         }
         izmeneniya.Clear();
+        hod = null;
+        string hj;
+        if (Pult.Poddelka != null && Pult.Poddelka.TryGetValue("~hod", out hj)) PoddelnyyHod(hj);
     }
 
     static readonly string[] RAZDELY = { "glavnaya", "programmy", "sayty", "servery", "zapret", "zhurnal", "nastroyki" };
@@ -637,13 +838,13 @@ partial class Okno : Form
                         catch (Exception e) { Console.WriteLine("ПАДЕНИЕ " + gde + e.GetType().Name + ": " + e.Message); plohih++; continue; }
                         if (o.oshibkaRazdela) { Console.WriteLine("ПАДЕНИЕ " + gde + "раздел показал ошибку (подробности в журнале)"); plohih++; continue; }
                         if (o.soderzh.Controls.Count == 0) { Console.WriteLine("ПУСТО " + gde + "раздел не построился"); plohih++; continue; }
-                        foreach (var z in Vylezaet(o.soderzh).Concat(Nalezaet(o.soderzh)).Concat(ShireOkna(o.soderzh)).Distinct())
+                        foreach (var z in Vylezaet(o.soderzh).Concat(Nalezaet(o.soderzh)).Concat(ShireOkna(o.soderzh)).Concat(o.Osoboe(nabor.Item1, s)).Distinct())
                         { Console.WriteLine("ЗАМЕЧАНИЕ " + gde + z); plohih++; }
                     }
                 }
                 if (OshibokVFone > fonDo) { Console.WriteLine("ОШИБКИ В ФОНЕ [" + nabor.Item1 + "]: " + (OshibokVFone - fonDo) + " (подробности в журнале окна)"); plohih += OshibokVFone - fonDo; }
                 // утечка: раздел перестраивается раз в минуту — окна Windows не должны копиться
-                if (nabor.Item2 != null && nabor.Item1 == "всё полно")
+                if (nabor.Item2 != null && (nabor.Item1 == "всё полно" || nabor.Item1 == "ход: середина"))
                 {
                     o.Size = new Size(1078, 694); o.Otkryt("glavnaya"); Zhdat(100);
                     uint do_ = GetGuiResources(Process.GetCurrentProcess().Handle, 1);
@@ -657,6 +858,10 @@ partial class Okno : Form
             Console.WriteLine("набор «" + nabor.Item1 + "»: " + (plohih == bylo ? "в порядке" : "замечаний " + (plohih - bylo)));
         }
         Pult.Poddelka = null; Pult.TolkoChtenie = false;
+        int zh = ProbaZhivogoHoda();
+        Console.WriteLine("живой ход (файл меняется, карточка обновляется на месте): " + (zh == 0 ? "в порядке" : "замечаний " + zh));
+        plohih += zh;
+        UbratProbu();
         // вынос из оболочки — последовательность Коробки
         int vyn = ProbaVynos(null, false);
         Console.WriteLine("вынос из оболочки: " + (vyn == 0 ? "в порядке" : "замечаний " + vyn));
@@ -664,6 +869,161 @@ partial class Okno : Form
         Console.WriteLine(plohih == 0 ? "ИТОГ: всё в порядке" : "ИТОГ: замечаний " + plohih);
         return plohih;
     }
+
+    // Особые проверки (21.11) — то, что он выбрал по концептам: карточка хода вверху каждой страницы, список «Настройка»
+    // на Мониторе, значок Claude в главной карточке (и Claude больше нигде в ней не выпячивается).
+    IEnumerable<string> Osoboe(string nabor, string razdel)
+    {
+        var str = soderzh.Controls.Count > 0 ? soderzh.Controls[0] : null;
+        if (str == null || Pult.Poddelka == null) yield break;
+        bool zhdemHod = Pult.Poddelka.ContainsKey("~hod");
+        var kh = str.Controls.OfType<KartaHoda>().FirstOrDefault();
+        if (!zhdemHod) { if (kh != null) yield return "карточка хода есть, хотя ничего не идёт"; }
+        else if (kh == null || !kh.Visible) yield return "нет карточки хода вверху страницы";
+        else
+        {
+            if (str.Controls.GetChildIndex(kh) != 0) yield return "карточка хода не первая на странице";
+            if (kh.NizSoderzhimogo > kh.Height) yield return "карточка хода: текст ниже края (" + kh.NizSoderzhimogo + " > " + kh.Height + ")";
+            string t = string.Join(" | ", kh.Teksty);
+            Func<string, bool> est = x => t.IndexOf(x, StringComparison.Ordinal) >= 0;
+            switch (nabor)
+            {
+                case "ход: середина":
+                    if (!est("Замер серверов — 48%")) yield return "карточка хода: нет заголовка «Замер серверов — 48%»: " + t;
+                    if (!est("осталось ~1 мин 20 с")) yield return "карточка хода: нет «осталось ~1 мин 20 с»: " + t;
+                    if (!est("Меряю скорость: 7 из 14")) yield return "карточка хода: нет подробности текущего шага: " + t;
+                    if (kh.Sdelano != 1 || kh.Tekushchiy != 1 || kh.Vperedi != 2) yield return "карточка хода: шаги не так (сделано " + kh.Sdelano + ", текущий " + kh.Tekushchiy + ", впереди " + kh.Vperedi + ")";
+                    if (est("Нет вестей")) yield return "карточка хода: «нет вестей» при свежем ходе";
+                    if (kh.Zakryt.Visible) yield return "карточка хода: крестик виден, пока действие идёт";
+                    break;
+                case "ход: без процентов":
+                    if (!est("Замер серверов — идёт…") || !est("прошло 1 мин 5 с")) yield return "карточка хода без процентов: нет «идёт…» и времени: " + t;
+                    if (est("%")) yield return "карточка хода без процентов: проценты взялись ниоткуда: " + t;
+                    break;
+                case "ход: молчит":
+                    if (!est("Нет вестей уже 2 мин 0 с")) yield return "карточка хода: нет «нет вестей от замера»: " + t;
+                    break;
+                case "ход: конец ok":
+                    if (!est("Готово: Замер серверов") || !est("Выбран Germany 1, 260 Мбит/с")) yield return "карточка хода: нет итога «Готово»: " + t;
+                    if (!kh.Zakryt.Visible) yield return "карточка хода: нет крестика «закрыть» после конца";
+                    break;
+                case "ход: конец с ошибкой":
+                    if (!est("Не вышло: Замер серверов") || !est("Karing не запущен — запустите его")) yield return "карточка хода: нет итога «Не вышло»: " + t;
+                    if (!kh.Zakryt.Visible) yield return "карточка хода: нет крестика «закрыть» после конца";
+                    break;
+            }
+        }
+        if (razdel != "glavnaya" || sost == null || Pult.Sboy(sost)) yield break;
+        // список «Настройка»
+        var kn = str.Controls.Find("karta-nastroyki", true).FirstOrDefault();
+        if (nabor == "как у друга")
+        {
+            if (kn == null) yield return "нет списка «Настройка» у друга";
+            else
+            {
+                if (!TekstyVnutri(kn).Contains("Настройка — 0 из 4")) yield return "список настройки: нет заголовка «Настройка — 0 из 4»";
+                foreach (var nk in new[] { "Скрыть", "Проверить снова", "Включить", "Замерить", "Поставить", "Не нужно" })
+                    if (!Elementy(kn).Any(c => c is Knopa && c.Text == nk && c.Visible)) yield return "список настройки: нет кнопки «" + nk + "»";
+            }
+        }
+        else if (kn != null && (nabor == "всё полно" || nabor.StartsWith("настройка:") || nabor.StartsWith("Claude") || nabor.StartsWith("ход:")))
+            yield return "список настройки виден, хотя " + (nabor == "настройка: скрыта" ? "он скрыт" : "всё готово");
+        // значок Claude
+        var z = str.Controls.Find("claude-znachok", true).FirstOrDefault();
+        Color? zhdem = nabor == "Claude: красный" ? Kras : nabor == "Claude: серый" ? Sery : nabor == "всё полно" || nabor == "Claude: зелёный" || nabor.StartsWith("ход:") ? Zel : (Color?)null;
+        if (nabor == "Claude: не показывать" || nabor == "как у друга" || nabor.StartsWith("настройка:")) { if (z != null) yield return "значок Claude виден, хотя pokazat = false"; }
+        else if (zhdem != null)
+        {
+            if (z == null) yield return "нет значка Claude";
+            else
+            {
+                var tochka = z.Controls.OfType<Label>().FirstOrDefault(l => l.Text == "●");
+                if (tochka == null || !(tochka.Tag is Color) || ((Color)tochka.Tag).ToArgb() != zhdem.Value.ToArgb()) yield return "значок Claude: цвет точки не тот";
+                if (!TekstyVnutri(z).Any(x => x.StartsWith("Claude"))) yield return "значок Claude без надписи «Claude»";
+                if (z.Parent == null || z.Parent.Name != "glavnaya-sostoyanie") yield return "значок Claude не в главной карточке";
+                if (string.IsNullOrEmpty(podskazki.GetToolTip(z))) yield return "у значка Claude нет подсказки";
+            }
+        }
+        // Claude не выпячивать: в главной карточке слово «Claude» — только в значке
+        var gl = str.Controls.Find("glavnaya-sostoyanie", true).FirstOrDefault();
+        if (gl == null) yield return "нет главной карточки «Всё работает»";
+        else foreach (Control c in gl.Controls) if (c != z && c is Label && c.Text.Contains("Claude")) yield return "Claude в подписи главной карточки: «" + c.Text + "»";
+    }
+
+    // Живой ход: сторож переписывает файл, окно читает его таймером — карточка та же (страница не перестраивается),
+    // недописанный файл и файл, открытый писателем, не сбивают показ; конец — итог и крестик; крестик убирает карточку.
+    static int ProbaZhivogoHoda()
+    {
+        int plohih = 0;
+        Action<string> ploho = z => { Console.WriteLine("ЗАМЕЧАНИЕ [живой ход] " + z); plohih++; };
+        Action<Dictionary<string, object>> pisat = d => File.WriteAllText(HOD_PROBA, Pult.Json(d), new UTF8Encoding(false));
+        Func<int, int, int?, string, double, bool, Dictionary<string, object>> fayl = (shag, proc, ost, tekst, nazad, konec) => new Dictionary<string, object> {
+            { "chto", "Замер серверов" }, { "shagi", new[] { "Нахожу серверы подписки", "Меряю скорость", "Ставлю лучший сервер", "Проверяю, что интернет работает" } },
+            { "shag", shag }, { "tekst", tekst }, { "procent", proc }, { "ostalos", ost }, { "nachalo", Hod.Seychas() - 60 }, { "obnovleno", Hod.Seychas() - nazad },
+            { "konec", konec }, { "ok", konec ? (object)true : null }, { "itog", konec ? "Выбран Germany 1, 260 Мбит/с" : "" } };
+        var bylo = Pult.Poddelka;
+        Pult.Poddelka = Poddelki.Polnye();
+        try
+        {
+            using (var o = new Okno(false))
+            {
+                o.Size = new Size(1078, 694); o.Show(); o.Location = new Point(-20000, -20000);
+                o.ZagruzitVse();
+                UbratProbu();
+                o.hod = new Hod { Chto = "Замер серверов", Put = HOD_PROBA };
+                o.Otkryt("glavnaya"); Zhdat(30);
+                var kh = o.kartaHoda;
+                if (kh == null) { ploho("карточки хода нет"); return plohih; }
+                Func<string> t = () => string.Join(" | ", kh.Teksty);
+                o.TikHoda();
+                if (!t().Contains("Замер серверов — идёт…")) ploho("файла ещё нет — нет «идёт…»: " + t());
+                int h0 = kh.Height;
+                pisat(fayl(1, 48, 80, "Меряю скорость: 7 из 14", 0, false)); o.TikHoda();
+                if (o.kartaHoda != kh || kh.IsDisposed) ploho("карточка пересоздана, а должна обновиться на месте");
+                if (!t().Contains("Замер серверов — 48%") || !t().Contains("Меряю скорость: 7 из 14") || !t().Contains("осталось ~1 мин 20 с")) ploho("после записи файла нет хода: " + t());
+                if (kh.Height <= h0) ploho("высота не выросла под шаги (" + h0 + " → " + kh.Height + ")");
+                if (kh.NizSoderzhimogo > kh.Height) ploho("текст ниже края карточки");
+                File.WriteAllText(HOD_PROBA, "{\"shag\": 2, \"proc"); o.TikHoda();
+                if (!t().Contains("48%")) ploho("недописанный файл сбил показ: " + t());
+                pisat(fayl(2, 70, 30, "Ставлю Germany 1", 0, false));
+                using (new FileStream(HOD_PROBA, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) o.TikHoda();
+                if (!t().Contains("Замер серверов — 70%") || kh.Sdelano != 2) ploho("файл, открытый писателем, не прочитался: " + t());
+                pisat(fayl(2, 70, 30, "Ставлю Germany 1", 100, false)); o.TikHoda();
+                if (!System.Text.RegularExpressions.Regex.IsMatch(t(), "Нет вестей уже 1 мин (39|40|41) с")) ploho("молчит 100 с — нет «нет вестей»: " + t());
+                if (t().Contains("осталось")) ploho("при зависшем ходе показано старое «осталось»");
+                pisat(fayl(3, 100, 0, "", 0, true));
+                o.ZakonchitHod(o.hod, new Dictionary<string, object> { { "ok", true } });
+                if (!t().Contains("Готово: Замер серверов") || !t().Contains("Выбран Germany 1, 260 Мбит/с") || !kh.Zakryt.Visible) ploho("конец: нет итога или крестика: " + t());
+                o.TikHoda();   // после конца таймер ничего не трогает
+                kh.Zakryt.PerformClick(); Zhdat(30);
+                if (o.hod != null || o.soderzh.Controls[0].Controls.OfType<KartaHoda>().Any()) ploho("крестик не убрал карточку");
+            }
+        }
+        catch (Exception e) { ploho("упало: " + e.GetType().Name + ": " + e.Message); }
+        finally { Pult.Poddelka = bylo; UbratProbu(); }
+        return plohih;
+    }
+
+    // --proba-hoda <файл>: что окно покажет по этому файлу хода (без окон на экране, без сети)
+    public static int ProbaHoda(string put)
+    {
+        proba = true;
+        var d = ProchitatHod(put);
+        if (d == null) { Console.WriteLine("НЕ ПРОЧИТАЛ файл хода: " + put); return 1; }
+        var nach = Pult.ChIliNet(Pult.G(d, "nachalo"));
+        var h = new Hod { Chto = "(название от окна)", Put = put, Fayl = d, Nachalo = nach != null ? DateTime.Now.AddSeconds(-(Hod.Seychas() - nach.Value)) : DateTime.Now };
+        if (h.KonecVFayle) h.Zakonchit(new Dictionary<string, object> { { "ok", Pult.B(d, "ok") } });
+        using (var kh = new KartaHoda { Width = 794 })
+        {
+            kh.Pokazat(h);
+            foreach (var t in kh.Teksty) Console.WriteLine("  " + t);
+            Console.WriteLine("шаги: сделано " + kh.Sdelano + ", текущий " + (kh.Tekushchiy >= 0 ? (kh.Tekushchiy + 1).ToString() : "нет") + ", впереди " + kh.Vperedi +
+                              "; молчит " + h.Molchit + " с; крестик " + (kh.Zakryt.Visible ? "есть" : "нет") + "; высота " + kh.Height + ", текст до " + kh.NizSoderzhimogo);
+        }
+        return 0;
+    }
+
+    static List<string> TekstyVnutri(Control r) { var l = new List<string>(); foreach (Control c in r.Controls) { if (c is Label) l.Add(c.Text); l.AddRange(TekstyVnutri(c)); } return l; }
 
     [DllImport("user32.dll")] static extern uint GetGuiResources(IntPtr p, uint f);
 
@@ -714,7 +1074,7 @@ partial class Okno : Form
     {
         suho = true; proba = true;
         int vsego = 0, ne = 0, skryto = 0;
-        foreach (var nabor in Poddelki.Vse().Where(x => x.Item1 == "всё полно" || x.Item1 == "как у друга" || x.Item1 == "всё сломано"))
+        foreach (var nabor in Poddelki.Vse().Where(x => x.Item1 == "всё полно" || x.Item1 == "как у друга" || x.Item1 == "всё сломано" || x.Item1 == "ход: конец ok" || x.Item1 == "ход: середина"))
         {
             Pult.Poddelka = nabor.Item2;
             Console.WriteLine("== " + nabor.Item1);
@@ -762,6 +1122,7 @@ partial class Okno : Form
             }
         }
         Pult.Poddelka = null;
+        UbratProbu();
         Console.WriteLine("ИТОГ: нажалось " + (vsego - ne) + " из " + vsego + (skryto > 0 ? " (ещё " + skryto + " скрыты при тех данных — так задумано)" : ""));
         return ne;
     }
@@ -927,6 +1288,7 @@ partial class Okno : Form
                 }
             }
         }
+        UbratProbu();
     }
 }
 
@@ -938,10 +1300,63 @@ static class Poddelki
 
     public static List<Tuple<string, Dictionary<string, string>>> Vse()
     {
+        var polnye = Polnye(); var drug = Drug();
         return new List<Tuple<string, Dictionary<string, string>>>
         {
-            Tuple.Create("как у друга", Drug()), Tuple.Create("всё полно", Polnye()), Tuple.Create("всё сломано", Slomano()),
-            Tuple.Create("пульт молчит", Molchit()), Tuple.Create("нет Python", NetPythona()), Tuple.Create("кривые данные", Krivye())
+            Tuple.Create("как у друга", drug), Tuple.Create("всё полно", polnye), Tuple.Create("всё сломано", Slomano()),
+            Tuple.Create("пульт молчит", Molchit()), Tuple.Create("нет Python", NetPythona()), Tuple.Create("кривые данные", Krivye()),
+            // ход долгого действия (DOGOVOR-hod.md): поверх «всё полно» — карточка вверху каждой страницы
+            Tuple.Create("ход: середина", Var(polnye, null, HodSeredina())),
+            Tuple.Create("ход: без процентов", Var(polnye, null, J(new { chto = "Замер серверов", idet = true, proshlo = 65, fayl = (object)null }))),
+            Tuple.Create("ход: молчит", Var(polnye, null, J(new { chto = "Замер серверов", idet = true, proshlo = 200, fayl = FaylHoda(1, 48, 80, "Меряю скорость: 7 из 14", 120, false, null, "") }))),
+            Tuple.Create("ход: конец ok", Var(polnye, null, J(new { chto = "Замер серверов", idet = false, proshlo = 130, fayl = FaylHoda(3, 100, 0, "", 1, true, true, "Выбран Germany 1, 260 Мбит/с"), otvet = new { ok = true } }))),
+            Tuple.Create("ход: конец с ошибкой", Var(polnye, null, J(new { chto = "Замер серверов", idet = false, proshlo = 12, fayl = FaylHoda(0, 5, null, "", 1, true, false, "Karing не запущен — запустите его"), otvet = new { ok = false, info = "Karing не отвечает" } }))),
+            // список первичной настройки
+            Tuple.Create("настройка: всё готово", Var(drug, d => { d["nastroyka"] = Nastroyka(true, true, true, true); })),
+            Tuple.Create("настройка: скрыта", Var(drug, d => { d["nastroyka_skryta"] = true; })),
+            // значок Claude на главной карточке
+            Tuple.Create("Claude: зелёный", Var(polnye, d => { d["claude_znachok"] = new Dictionary<string, object> { { "pokazat", true }, { "server", "Англия🇬🇧🔃" }, { "ok", true }, { "proveren", "20.11.2026 22:30" } }; })),
+            Tuple.Create("Claude: красный", Var(polnye, d => { d["claude_znachok"] = new Dictionary<string, object> { { "pokazat", true }, { "server", "Англия🇬🇧🔃" }, { "ok", false }, { "proveren", "20.11.2026 22:30" } }; })),
+            Tuple.Create("Claude: серый", Var(polnye, d => { d["claude_znachok"] = new Dictionary<string, object> { { "pokazat", true }, { "server", "" }, { "ok", null }, { "proveren", "" } }; })),
+            Tuple.Create("Claude: не показывать", Var(polnye, d => { d["claude_znachok"] = new Dictionary<string, object> { { "pokazat", false }, { "server", "Англия" }, { "ok", true }, { "proveren", "20.11.2026 22:30" } }; })),
+        };
+    }
+
+    // набор на основе другого: поправить ответ sostoyanie и/или добавить поддельный ход ("~hod" — не команда пульта)
+    static Dictionary<string, string> Var(Dictionary<string, string> baza, Action<Dictionary<string, object>> sost, string hod = null)
+    {
+        var n = new Dictionary<string, string>(baza);
+        if (sost != null)
+        {
+            var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(n["sostoyanie"]);
+            sost(d);
+            n["sostoyanie"] = J(d);
+        }
+        if (hod != null) n["~hod"] = hod;
+        return n;
+    }
+
+    static readonly string[] SHAGI_ZAMERA = { "Нахожу серверы подписки", "Меряю скорость", "Ставлю лучший сервер", "Проверяю, что интернет работает" };
+
+    // файл хода, как его пишет сторож; время — «сколько секунд назад» (окно пересчитает в настоящее при загрузке)
+    static Dictionary<string, object> FaylHoda(int shag, int procent, int? ostalos, string tekst, int obnovlenoNazad, bool konec, bool? ok, string itog)
+    {
+        return new Dictionary<string, object> { { "chto", "Замер серверов" }, { "shagi", SHAGI_ZAMERA }, { "shag", shag }, { "tekst", tekst }, { "procent", procent }, { "ostalos", ostalos },
+                                                { "obnovleno_nazad", obnovlenoNazad }, { "konec", konec }, { "ok", ok }, { "itog", itog } };
+    }
+
+    // замер на середине: шаг 2 из 4, 48 %, осталось 80 с (пример из договора)
+    public static string HodSeredina() { return J(new { chto = "Замер серверов", idet = true, proshlo = 42, fayl = FaylHoda(1, 48, 80, "Меряю скорость: 7 из 14", 1, false, null, "") }); }
+
+    // список настройки из договора (4 пункта в этом порядке)
+    static object[] Nastroyka(bool karing, bool zadaniya, bool server, bool zapret)
+    {
+        return new object[]
+        {
+            new Dictionary<string, object> { { "id", "karing" }, { "gotovo", karing }, { "tekst", "Karing найден, подписка есть, подключение включено" }, { "sovet", karing ? "" : "Karing не запущен — запустите его и включите подключение" } },
+            new Dictionary<string, object> { { "id", "zadaniya" }, { "gotovo", zadaniya }, { "tekst", "Сторож проверяет сеть сам, каждые 10 минут" }, { "sovet", zadaniya ? "" : "Сейчас сторож работает, только пока открыто окно" } },
+            new Dictionary<string, object> { { "id", "server" }, { "gotovo", server }, { "tekst", "Выбран самый быстрый сервер" }, { "sovet", server ? "" : "Замер занимает пару минут" } },
+            new Dictionary<string, object> { { "id", "zapret" }, { "gotovo", zapret }, { "neobyaz", true }, { "tekst", "zapret: YouTube и голос Discord без VPN" }, { "sovet", zapret ? "" : "Не обязательно" } },
         };
     }
 
@@ -970,6 +1385,8 @@ static class Poddelki
         {
             { "sostoyanie", J(new { karing = false, zapret = false, strategiya = "", server = (string)null, skorost = (object)null, claude = "как всё остальное", posledniy = (string)null, zamer = (string)null,
                                     miganiya = 0, igra = new string[0], bedy = new[] { "Karing не работает", "zapret не работает", "Сторож не запускается сам — включите проверку каждые 10 минут" },
+                                    nastroyka = Nastroyka(false, false, false, false), nastroyka_skryta = false,
+                                    claude_znachok = new { pokazat = false, server = "", ok = (object)null, proveren = "" },
                                     otchet = new string[0], mig_log = new string[0], pult_log = new string[0], nastroyki = nas,
                                     stat = new { dni = new object[0], chasy = Chasy(), nadezhnost = new Dictionary<string, object>(), vybory = new object[0], samyy_dlinnyy = 0, bez_vpn = 0 } }) },
             { "programmy", J(new { programmy = new object[] {
@@ -1000,6 +1417,8 @@ static class Poddelki
             { "sostoyanie", J(new { karing = true, zapret = true, strategiya = "general (ALT13)", server = "Германия🇩🇪🔃", skorost = 217, claude = "Англия🇬🇧🔃", posledniy = "20.11.2026 21:50", zamer = "19.11.2026 01:31",
                                     miganiya = 7, igra = new[] { "dota2.exe", "звонок в Discord" },
                                     bedy = new[] { "zapret не работает", "Пустить через VPN: rutracker.org, nnmclub.to — напрямую не открывается или тормозит", "Сторож не запускается сам — включите проверку каждые 10 минут" },
+                                    nastroyka = Nastroyka(true, true, true, true), nastroyka_skryta = false,
+                                    claude_znachok = new { pokazat = true, server = "Англия🇬🇧🔃", ok = true, proveren = "20.11.2026 22:30" },
                                     otchet = new string[0], mig_log = new string[0], pult_log = new string[0], nastroyki = nas,
                                     stat = new { dni = new object[0], chasy = Chasy(0, 1, 0, 0, 3, 0, 0, 2, 0, 0, 0, 0, 1), nadezhnost = nad,
                                                  vybory = new object[] { new object[] { "18.11 03:00", "Германия🇩🇪🔃", 284 }, new object[] { "19.11 03:00", "Австрия🇦🇹🔃", 217 }, new object[] { "20.11 03:00", "Германия🇩🇪🔃", 260 } },
@@ -1059,7 +1478,10 @@ static class Poddelki
     {
         return new Dictionary<string, string>
         {
-            { "sostoyanie", "{\"karing\":null,\"zapret\":\"да\",\"server\":5,\"skorost\":\"быстро\",\"claude\":null,\"posledniy\":7,\"miganiya\":null,\"igra\":\"dota\",\"bedy\":[null,5,\"zapret не работает\"],\"nastroyki\":null,\"stat\":{\"chasy\":[null,[1],[\"a\",\"b\"],5],\"vybory\":[[\"x\"],null],\"nadezhnost\":{\"A\":null},\"bez_vpn\":\"много\",\"samyy_dlinnyy\":null}}" },
+            { "sostoyanie", "{\"karing\":null,\"zapret\":\"да\",\"server\":5,\"skorost\":\"быстро\",\"claude\":null,\"posledniy\":7,\"miganiya\":null,\"igra\":\"dota\",\"bedy\":[null,5,\"zapret не работает\"],\"nastroyki\":null,\"stat\":{\"chasy\":[null,[1],[\"a\",\"b\"],5],\"vybory\":[[\"x\"],null],\"nadezhnost\":{\"A\":null},\"bez_vpn\":\"много\",\"samyy_dlinnyy\":null}," +
+                            "\"nastroyka\":[null,5,{\"id\":null,\"gotovo\":\"нет\",\"tekst\":7},{\"id\":\"zapret\",\"neobyaz\":\"да\",\"sovet\":null},{\"id\":\"karing\",\"tekst\":\"очень длинный текст пункта настройки, чтобы проверить перенос строк и то, что кнопки справа не налезают на текст\",\"sovet\":\"и такой же длинный совет: запустите Karing, добавьте подписку, включите подключение и нажмите «Проверить снова»\"}],\"nastroyka_skryta\":\"нет\",\"claude_znachok\":{\"pokazat\":true,\"server\":[1,2],\"ok\":\"да\",\"proveren\":5}}" },
+            // файл хода с мусором: не те типы, шаг за пределами списка, проценты строкой
+            { "~hod", "{\"chto\":null,\"idet\":true,\"proshlo\":\"x\",\"fayl\":{\"chto\":5,\"shagi\":[null,\"Шаг\",7],\"shag\":\"два\",\"procent\":\"много\",\"ostalos\":-5,\"tekst\":null,\"obnovleno_nazad\":\"x\",\"konec\":\"нет\"}}" },
             { "programmy", "{\"programmy\":[null,5,{\"exe\":null,\"v_seti\":true},{\"exe\":\"a.exe\",\"v_seti\":true,\"karing\":true,\"marshrut\":null,\"pravilo\":true}]}" },
             { "servery", "{\"zamer\":{\"results\":[[\"X\"],null,[\"Y\",\"abc\",null,null],5]},\"podrobno\":{\"X\":null,\"Y\":{\"prichiny\":null,\"vid\":5}},\"claude\":null}" },
             { "lenta", "{\"lenta\":[[\"a\"],null,5,[null,null,null]]}" },

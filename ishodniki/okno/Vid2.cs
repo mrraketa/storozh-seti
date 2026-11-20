@@ -11,6 +11,10 @@ static class Zn
     public const string Dom = "", Prilozh = "", Globus = "", Server = "", Molniya = "",
         Spisok = "", Nastr = "", Shit = "", Galka = "", Obnovit = "", Skorost = "",
         Preduprezhd = "", Chasy = "", Raketa = "";
+    // 21.11: ход действий и список настройки — тоже из шрифта (EC61 CompletedSolid, ECCA RadioBtnOff, ECCB RadioBtnOn,
+    // E711 Cancel, EB90 StatusErrorFull; F16A ProgressRingDots есть только в Segoe Fluent — на Windows 10 вместо него ECCB)
+    public const string GalkaKrug = "", Krug0 = "", KrugTochka = "", Krestik = "", OshibkaKrug = "";
+    public static string Idet { get { return Semya == "Segoe Fluent Icons" ? "" : KrugTochka; } }
     static string semya;
     public static string Semya
     {
