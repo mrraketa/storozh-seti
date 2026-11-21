@@ -66,6 +66,22 @@ def verdict(bad):
     return "непонятно"
 
 
+def raz(n):
+    """«1 раз», «2 раза», «5 раз»."""
+    return f"{n} раза" if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else f"{n} раз"
+
+
+def prichina_slovami(v):
+    """Причина обрыва для человека, без скобок: «VPN-сервер: Англия (прямой интернет при этом был)» → «сервер Англия»."""
+    if v.startswith("VPN-сервер: "):
+        return "сервер " + v[len("VPN-сервер: "):].split(" (")[0]
+    if v.startswith("Karing не работал"):
+        return "Karing не работал"
+    if v.startswith("линия провайдера"):
+        return "пропал интернет у провайдера"
+    return v
+
+
 def day_summary(day):
     """Сколько сбоев каждого вида записано в журнал за этот день."""
     tag, out = day.strftime("[%d.%m "), {}
@@ -155,11 +171,10 @@ def main():
         if now.date() != day:
             daily = day_summary(day)  # по журналу на диске — перезапуск наблюдателя счётчик не обнуляет
             if daily:
-                s.say("Мигания за " + day.strftime("%d.%m") + ": " +
-                      "; ".join(f"{k} — {n} раз" for k, n in sorted(daily.items(), key=lambda x: -x[1])) +
-                      ". Подробно — mignaniya.log.")
+                s.say("Обрывы VPN за " + day.strftime("%d.%m") + ": " +
+                      "; ".join(f"{prichina_slovami(k)} — {raz(n)}" for k, n in sorted(daily.items(), key=lambda x: -x[1])) + ".")
             else:
-                s.say(f"Мигания за {day:%d.%m}: ни одного сбоя.")
+                s.say(f"Обрывы VPN за {day:%d.%m}: ни одного.")
             day, counts = now.date(), {}
         time.sleep(PERIOD)
 

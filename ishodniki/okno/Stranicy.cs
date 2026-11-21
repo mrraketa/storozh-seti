@@ -1,80 +1,329 @@
-// Разделы окна «Сторож сети» в виде «Живой монитор» (концепт 3, его выбор 18.11).
+// Разделы окна «Сторож сети». 21.11 — переделка по разбору DIZAYN-2111.md (его выбор: плитки по областям на Мониторе,
+// меню без рамок) и по замечаниям критика (круг 2). Правила для всех экранов:
+//  - одна шапка: заголовок, под ним одна строка подписи, справа не больше одной кнопки;
+//  - одна синяя (главная) кнопка на экран — только для действия, нужного сейчас; при «всё хорошо» синих нет;
+//  - карточка: заголовок, подпись ПОД ним, кнопки — в правом столбце одной ширины, отступы одинаковые (OTS);
+//  - пояснения короткие и рядом; длинное — в подсказке у значка «?»; ничего не обрезается многоточием (кроме имён);
+//  - цвет — только для состояния (зелёный/жёлтый/красный/серый — ZnakSost), маршруты — нейтральные метки;
+//  - шрифты: 15 (шапка), 11 (заголовок карточки), 10 (текст), 9 (мелкие подписи) и 18 для крупных чисел;
+//  - одна ширина содержимого на всех экранах (до 1240 px, по центру); скорость — в МБ/с везде;
+//  - одно имя — одно действие; выключенный Karing везде одной фразой (KARING_NE).
 // Каждый раздел переживает любой ответ пульта: пустой, {"ok": false}, без ключей, с null — показывает, что случилось,
-// а не падает и не остаётся пустым (проверка: --samoproverka, наборы «как у друга», «всё сломано», «кривые данные»).
+// а не падает (проверка: --samoproverka, наборы «как у друга», «всё сломано», «кривые данные»).
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 partial class Okno
 {
-    // ---------- общее ----------
-    int Shir { get { return Math.Max(600, soderzh.ClientSize.Width - soderzh.Padding.Horizontal - 34); } }
+    // ---------- сетка и шрифты (одно место на всё окно) ----------
+    const int OTS = 16, PROM = 12, KN_W = 210, KN_H = 36, MAX_SHIR = 1240, ZHURNAL_SHIR = 860;
+    internal static readonly Font F_STR = new Font("Segoe UI Semibold", 15f), F_ZAG = new Font("Segoe UI Semibold", 11f),
+        F_TEKST = new Font("Segoe UI", 10f), F_ZHIR = new Font("Segoe UI Semibold", 10f), F_MELK = new Font("Segoe UI", 9f);
+    static readonly Dictionary<float, Font> shriftyZn = new Dictionary<float, Font>();
+    static Font ZnF(float r) { Font f; if (!shriftyZn.TryGetValue(r, out f)) shriftyZn[r] = f = Zn.Shrift(r); return f; }
+    // выключенный Karing — везде одной фразой
+    const string KARING_NE = "Karing (VPN) не запущен";
+
+    // ширина содержимого: одна на всех экранах — до 1240 px, колонка по центру (правило 9: справа нет пустой полосы)
+    // видимая ширина страницы — без полосы прокрутки: колонка по центру именно видимой части (слева и справа поровну)
+    int Vidno { get { return Math.Max(600, soderzh.ClientSize.Width - soderzh.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth); } }
+    int Shir { get { return Math.Min(MAX_SHIR, Math.Max(584, Vidno - 16)); } }
+    internal int Sdvig { get { return Math.Max(0, (Vidno - Shir) / 2); } }
     static List<object> Spisok(object o) { return o is IEnumerable && !(o is string) && !(o is IDictionary) ? ((IEnumerable)o).Cast<object>().ToList() : new List<object>(); }
     static List<List<object>> Spiski(Dictionary<string, object> d, string k) { return Pult.L(d, k).Where(o => o is IEnumerable && !(o is string) && !(o is IDictionary)).Select(Spisok).ToList(); }
     internal static string Vremya(int sek) { sek = Math.Max(0, sek); return sek >= 3600 ? (sek / 3600) + " ч " + (sek % 3600 / 60) + " мин" : sek >= 60 ? (sek / 60) + " мин " + (sek % 60) + " с" : sek + " с"; }
-    Nadpis Zg(string t, int x, int y, float r = 11f) { return new Nadpis { Text = t, Font = new Font("Segoe UI Semibold", r), Location = new Point(x, y) }; }
-    Nadpis Np(string t, int x, int y, bool vt = false, int maxW = 0) { var n = new Nadpis { Text = t, Location = new Point(x, y), Tag = vt ? "vt" : null }; if (maxW > 0) n.MaximumSize = new Size(maxW, 0); return n; }
-    Nadpis Zk(string z, int x, int y, float r = 12f, object cvet = null) { return new Nadpis { Text = z, Font = Zn.Shrift(r), Location = new Point(x, y), Tag = cvet ?? "vt" }; }
-    // одна строка: не влезла — многоточие, полный текст — в подсказке
-    Nadpis Np1(string t, int x, int y, int w, bool vt = true, Font f = null, bool podskazka = true)
+    // коротко: до минуты — секунды, дальше — минуты («1162 с» → «19 мин»)
+    internal static string VremyaKr(int sek) { sek = Math.Max(0, sek); return sek < 60 ? sek + " с" : sek < 3600 ? (int)Math.Round(sek / 60.0) + " мин" : (sek / 3600) + " ч " + (sek % 3600 / 60) + " мин"; }
+    static int TextW(string t, Font f) { return TextRenderer.MeasureText(t ?? "", f, Size.Empty, TextFormatFlags.NoPrefix).Width; }
+    // высота абзаца — тем же способом, каким её считает сама подпись (иначе строки налезают друг на друга)
+    static readonly Label izmeritel = new Label { AutoSize = true, UseMnemonic = false };
+    int VysTeksta(string t, int w, Font f = null)
     {
-        var n = new Nadpis { Text = t ?? "", Location = new Point(x, y), Tag = vt ? "vt" : null };
-        if (f != null) n.Font = f;
-        n.AutoSize = false; n.AutoEllipsis = true;
-        n.Size = new Size(Math.Max(16, w), (f ?? Font).Height + 4);
-        if (podskazka && !string.IsNullOrEmpty(t)) podskazki.SetToolTip(n, Pult.Chisto(t));
+        izmeritel.Font = f ?? F_TEKST; izmeritel.MaximumSize = new Size(Math.Max(20, w), 0); izmeritel.Text = string.IsNullOrEmpty(t) ? " " : t;
+        return izmeritel.PreferredSize.Height;
+    }
+    static string Mnozh(int n, string odin, string dva, string mnogo)
+    {
+        int a = Math.Abs(n) % 100, b = a % 10;
+        return n + " " + (a >= 11 && a <= 14 ? mnogo : b == 1 ? odin : b >= 2 && b <= 4 ? dva : mnogo);
+    }
+
+    // ---------- заготовки ----------
+    // Абзац: переносится по словам, не обрезается; высота — по тексту (VysTeksta с тем же шрифтом и шириной).
+    // tag: "vt" — второстепенный цвет; "ok"/"zhelt"/"kras"/"sery" — цвет состояния (Krasit подставляет под тему)
+    Nadpis Abz(string t, int x, int y, int w, string tag = null, Font f = null)
+    {
+        return new Nadpis { Text = t ?? "", Location = new Point(x, y), Tag = tag, Font = f ?? F_TEKST, MaximumSize = new Size(Math.Max(20, w), 0) };
+    }
+    // Короткое значение в столбце фиксированной ширины (числа и даты в списках — по одной линии)
+    Nadpis Stolb(string t, int x, int y, int w, bool vprava, string tag = null, Font f = null)
+    {
+        var n = new Nadpis { Text = t ?? "", Location = new Point(x, y), Tag = tag, Font = f ?? F_TEKST, AutoSize = false };
+        n.Size = new Size(Math.Max(10, w), (f ?? F_TEKST).Height + 4);
+        n.TextAlign = vprava ? ContentAlignment.MiddleRight : ContentAlignment.MiddleLeft;
         return n;
     }
-    int VysTeksta(string t, int w, Font f = null) { return TextRenderer.MeasureText(string.IsNullOrEmpty(t) ? " " : t, f ?? Font, new Size(Math.Max(10, w), 10000), TextFormatFlags.WordBreak).Height; }
+    // Имя (программы, сайта, сервера): одна строка, не влезло — многоточие, полностью — в подсказке
+    NadpisImya ImyaN(string t, int x, int y, int w, string tag = null, Font f = null, string podskazka = null)
+    {
+        var n = new NadpisImya { Text = t ?? "", Location = new Point(x, y), Tag = tag, Font = f ?? F_TEKST };
+        n.Size = new Size(Math.Max(16, w), (f ?? F_TEKST).Height + 4);
+        string p = podskazka ?? t;
+        if (!string.IsNullOrEmpty(p)) podskazki.SetToolTip(n, Pult.Chisto(p));
+        return n;
+    }
+    Nadpis Zk(string z, int x, int y, float r = 12f, string tag = "vt") { return new Nadpis { Text = z, Font = ZnF(r), Location = new Point(x, y), Tag = tag }; }
+    // значок «?» — только для подсказок: длинное пояснение — в подсказке, а не абзацем на экране (правило 4)
+    Nadpis Vopros(string podskazka, int x, int y)
+    {
+        var n = new Nadpis { Text = Zn.Vopros, Font = ZnF(11f), Location = new Point(x, y), Tag = "vt", Cursor = Cursors.Help, Name = "vopros" };
+        podskazki.SetToolTip(n, podskazka);
+        return n;
+    }
+    Knopa KnZ(string t, string zn, Action d, bool glavnaya = false, int w = KN_W) { var k = Kn(t, d, glavnaya, w); k.Znachok = zn; return k; }
+    bool Sprosit(string v) { if (suho) return true; return MessageBox.Show(this, v, "Сторож сети", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes; }
+    static int ShirKnopki(Knopa k) { return Math.Max(KN_W, TextW(k.Text, F_TEKST) + (string.IsNullOrEmpty(k.Znachok) ? 0 : 26) + 40); }
 
-    Panel Shapka(string zag, string pod, Knopa knopka)
+    // Шапка экрана (правило 1): заголовок, под ним одна строка подписи, справа — не больше одной кнопки.
+    // sost — у Монитора: заголовок — фраза общего состояния со значком её цвета; dop — компактная метка левее кнопки
+    // (Claude); podskazkaPod — «?» после подписи (правило меток серверов).
+    Panel Shapka(string zag, string pod, Knopa knopka, string sost = null, Control dop = null, string podskazkaPod = null)
     {
         int W = Shir;
-        var p = new Panel { Width = W, Height = 44, Margin = new Padding(0, 0, 0, 8) };
-        var fz = new Font("Segoe UI Semibold", 15f);
-        p.Controls.Add(new Label { Text = zag, AutoSize = true, Font = fz, Location = new Point(0, 4) });
-        int x = 10 + TextRenderer.MeasureText(zag, fz).Width;
-        int prav = knopka != null ? W - knopka.Width - 10 : W;
-        if (pod != "") p.Controls.Add(Np1(pod, x, 14, prav - x));
-        if (knopka != null) { knopka.Location = new Point(W - knopka.Width, 2); knopka.Margin = Padding.Empty; p.Controls.Add(knopka); }
+        var p = new Panel { Width = W, Margin = new Padding(0, 0, 0, 16), Name = "shapka" };
+        if (knopka != null) knopka.Width = ShirKnopki(knopka);
+        int x = 0;
+        if (sost != null) { p.Controls.Add(new ZnakSost { Sost = sost, Size = new Size(30, 30), Location = new Point(0, 3), Name = "shapka-znak" }); x = 42; }
+        int pravo = (knopka != null ? knopka.Width + 24 : 0) + (dop != null ? dop.Width + 12 : 0);
+        int tw = W - x - pravo;
+        p.Controls.Add(Abz(zag, x, 0, tw, sost, F_STR));
+        int y = VysTeksta(zag, tw, F_STR);
+        if (!string.IsNullOrEmpty(pod))
+        {
+            int pw = tw - (podskazkaPod != null ? 26 : 0);
+            p.Controls.Add(Abz(pod, x, y + 2, pw, "vt"));
+            if (podskazkaPod != null) p.Controls.Add(Vopros(podskazkaPod, x + Math.Min(pw, TextW(pod, F_TEKST)) + 2, y + 4));
+            y += 2 + VysTeksta(pod, pw);
+        }
+        int h = Math.Max(y, knopka != null ? KN_H : 0);
+        int seredina = Math.Min(h, 64) / 2;
+        if (knopka != null) { knopka.Location = new Point(W - knopka.Width, Math.Max(0, seredina - knopka.Height / 2)); knopka.Margin = Padding.Empty; p.Controls.Add(knopka); }
+        if (dop != null) { dop.Location = new Point(W - (knopka != null ? knopka.Width + 12 : 0) - dop.Width, Math.Max(0, seredina - dop.Height / 2)); p.Controls.Add(dop); }
+        p.Height = h + 2;
         return p;
     }
 
-    // красная карточка: что сломалось и «Повторить»
-    Kartochka KartaOshibki(int W, string zag, string tekst, Action povtor)
+    // Карточка (правило 3): заголовок, под ним подпись; rezerv — место справа под столбец кнопок; y — где начинать содержимое
+    Kartochka Karta(int W, string zag, string pod, out int y, string imya = null, string podskazka = null, int rezerv = 0)
     {
-        int tw = W - 32 - (povtor != null ? 176 : 0);
-        var kar = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, 12), Ottenok = Ris.Smes(pal.Poverhnost, Kras, pal.Temnaya ? 0.16 : 0.10) };
-        kar.Controls.Add(Zk(Zn.Preduprezhd, 16, 14, 12f, Kras));
-        kar.Controls.Add(Np1(zag, 44, 12, tw - 28, false, new Font("Segoe UI Semibold", 11f)));
-        kar.Controls.Add(Np(tekst, 16, 42, true, tw));
-        kar.Height = Math.Max(64, 42 + VysTeksta(tekst, tw) + 16);
-        if (povtor != null) { var kn = KnZ("Повторить", Zn.Obnovit, povtor, false, 150); kn.Location = new Point(W - 166, 13); kn.Margin = Padding.Empty; kar.Controls.Add(kn); }
+        var k = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, PROM), Name = imya ?? "" };
+        y = OTS - 2;
+        int tw = W - 2 * OTS - rezerv;
+        if (!string.IsNullOrEmpty(zag))
+        {
+            int zw = tw - (podskazka != null ? 26 : 0);
+            k.Controls.Add(Abz(zag, OTS, y, zw, null, F_ZAG));
+            if (podskazka != null) k.Controls.Add(Vopros(podskazka, OTS + Math.Min(zw, TextW(zag, F_ZAG)) + 4, y + 3));
+            y += VysTeksta(zag, zw, F_ZAG);
+        }
+        if (!string.IsNullOrEmpty(pod)) { k.Controls.Add(Abz(pod, OTS, y + 2, tw, "vt")); y += 2 + VysTeksta(pod, tw); }
+        y += 12;
+        return k;
+    }
+
+    // Строка действия внутри карточки: слева — что это (одна строка) и пояснение под ней, справа — кнопки столбцом одной ширины
+    int StrokaDeystviya(Kartochka kar, int W, int y, string zag, string opis, string podskazka, params Knopa[] knopki)
+    {
+        return StrokaDeystviyaF(kar, W, y, zag, opis, podskazka, F_TEKST, knopki);
+    }
+    int StrokaDeystviyaF(Kartochka kar, int W, int y, string zag, string opis, string podskazka, Font fZag, params Knopa[] knopki)
+    {
+        knopki = knopki.Where(x => x != null).ToArray();
+        int tw = W - 2 * OTS - (knopki.Length > 0 ? KN_W + 20 : 0);
+        int zw = tw - (podskazka != null ? 26 : 0);
+        int h = 0;
+        if (!string.IsNullOrEmpty(zag))
+        {
+            kar.Controls.Add(Abz(zag, OTS, y, zw, null, fZag));
+            if (podskazka != null) kar.Controls.Add(Vopros(podskazka, OTS + Math.Min(zw, TextW(zag, fZag)) + 4, y + 2));
+            h = VysTeksta(zag, zw, fZag);
+        }
+        if (!string.IsNullOrEmpty(opis)) { kar.Controls.Add(Abz(opis, OTS, y + h + 2, tw, "vt")); h += 2 + VysTeksta(opis, tw); }
+        int kh = knopki.Length * KN_H + Math.Max(0, knopki.Length - 1) * 8;
+        int ky = y + Math.Max(0, (h - kh) / 2);
+        foreach (var kn in knopki)
+        {
+            kn.Width = KN_W; kn.Height = KN_H; kn.Margin = Padding.Empty;
+            kn.Location = new Point(W - OTS - KN_W, ky); kar.Controls.Add(kn);
+            ky += KN_H + 8;
+        }
+        return y + Math.Max(h, kh) + 16;
+    }
+
+    // Полоса беды (правило 8): одна вверху экрана, с кнопками в правом столбце, а не повтор в каждой строке
+    Kartochka PolosaBedy(int W, string sost, string zag, string opis, params Knopa[] knopki)
+    {
+        knopki = knopki.Where(kb => kb != null).ToArray();
+        var kar = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, PROM), Name = "polosa-bedy", AccessibleDescription = sost,
+                                  Ottenok = sost == "sery" ? (Color?)null : Ris.Smes(pal.Poverhnost, ZnakSost.Cvet(sost), pal.Temnaya ? 0.16 : 0.09) };
+        kar.Controls.Add(new ZnakSost { Sost = sost, Location = new Point(OTS, 16), Size = new Size(24, 24) });
+        int x = OTS + 36, tw = W - x - OTS - (knopki.Length > 0 ? KN_W + 20 : 0);
+        kar.Controls.Add(Abz(zag, x, 14, tw, null, F_ZAG));
+        int y = 14 + VysTeksta(zag, tw, F_ZAG);
+        if (!string.IsNullOrEmpty(opis)) { kar.Controls.Add(Abz(opis, x, y + 2, tw, "vt")); y += 2 + VysTeksta(opis, tw); }
+        int kh = knopki.Length * KN_H + Math.Max(0, knopki.Length - 1) * 8;
+        int h = Math.Max(y + 14, knopki.Length > 0 ? kh + 28 : 0);
+        int ky = (h - kh) / 2;
+        foreach (var kn in knopki) { kn.Width = KN_W; kn.Height = KN_H; kn.Margin = Padding.Empty; kn.Location = new Point(W - OTS - KN_W, ky); kar.Controls.Add(kn); ky += KN_H + 8; }
+        kar.Height = h;
         return kar;
     }
 
-    Knopa KnZ(string t, string zn, Action d, bool glavnaya = false, int w = 200) { var k = Kn(t, d, glavnaya, w); k.Znachok = zn; return k; }
+    // Пульт ответил ошибкой: что не получилось — словами; сырой текст ошибки — только в подсказке у «?» и в журнале окна
+    static bool Syroe(string t) { return Regex.IsMatch(t ?? "", @"WinError|Traceback|Error|errno|urlopen|Exception|\.py\b|<|\[|ModuleNotFound", RegexOptions.IgnoreCase); }
+    Kartochka KartaOshibki(int W, string zag, string info, Action povtor)
+    {
+        bool syroe = Syroe(info);
+        if (syroe) Zapis("ошибка пульта (в окне — словами): " + info);
+        string t = syroe ? "Сторож ответил ошибкой. Окно спросит его ещё раз само через минуту" : Chel.Tekst(info);
+        var kn = povtor != null ? KnZ("Повторить", Zn.Obnovit, povtor) : null;
+        var kar = PolosaBedy(W, "kras", zag, t, kn);
+        kar.Name = "karta-oshibki";
+        if (syroe)
+        {
+            int tw = W - OTS * 2 - 36 - (kn != null ? KN_W + 20 : 0);
+            var abz = kar.Controls.OfType<Nadpis>().LastOrDefault();
+            if (abz != null && TextW(t, F_TEKST) + 30 < tw) kar.Controls.Add(Vopros("Текст ошибки:\n" + info, abz.Left + TextW(t, F_TEKST) + 4, abz.Top + 1));
+        }
+        return kar;
+    }
 
-    bool Sprosit(string v) { if (suho) return true; return MessageBox.Show(this, v, "Сторож сети", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes; }
+    Kartochka KartaZagruzki(int W, string t)
+    {
+        var kar = new Kartochka { Width = W, Height = 56, Margin = new Padding(0, 0, 0, PROM), Name = "karta-zagruzki" };
+        kar.Controls.Add(Abz(t, OTS, 18, W - 2 * OTS, "vt"));
+        return kar;
+    }
 
-    // Karing выключен — замер и смена сервера не пройдут: сказать сразу, а не через минуту ожидания
+    // Метка: нейтральная (маршрут: «через VPN», «напрямую»), акцентная («Сейчас») или цвета состояния (sost)
+    Kartochka Metka(string t, string sost, int x, int y)
+    {
+        Color ott = sost == null ? Ris.Smes(pal.Poverhnost, pal.Tekst, pal.Temnaya ? 0.12 : 0.07)
+                  : sost == "akc" ? Ris.Smes(pal.Poverhnost, Ris.AkcentV(pal), pal.Temnaya ? 0.3 : 0.14)
+                  : Ris.Smes(pal.Poverhnost, ZnakSost.Cvet(sost), pal.Temnaya ? 0.3 : 0.18);
+        var m = new Kartochka { Location = new Point(x, y), Size = new Size(TextW(t, F_TEKST) + 16, 24), Ottenok = ott, Skruglenie = 11, Name = "metka", Margin = Padding.Empty };
+        m.Controls.Add(new Nadpis { Text = t, Font = F_TEKST, Location = new Point(7, 3), Tag = sost == null || sost == "akc" ? null : sost });
+        return m;
+    }
+
+    // ---------- плитки состояния (его выбор 21.11: как «Безопасность Windows») ----------
+    class Plit { public string Id, Zag, Sost, Stroka, Podskazka; public List<Knopa> Kn = new List<Knopa>(); }
+
+    // Ряд равных плиток: у каждой заголовок, значок состояния и одна строка; кнопки — только где нужно действие,
+    // во всю ширину плитки, столбцом. Высота у всех одна. Узкое окно — по две в ряд.
+    Panel RyadPlitok(int W, List<Plit> pl, string imya)
+    {
+        var ryad = new Panel { Name = imya, Width = W, Margin = new Padding(0, 0, 0, PROM) };
+        bool odinRyad = W >= 900 || pl.Count <= 2;
+        int kol = odinRyad ? Math.Max(1, pl.Count) : 2;
+        int tw = (W - PROM * (kol - 1)) / kol;
+        bool estKn = pl.Any(p => p.Kn.Count > 0);
+        int hStr = pl.Max(p => VysTeksta(p.Stroka, tw - 2 * OTS - 30));
+        int h = 48 + Math.Max(22, hStr) + (estKn ? 16 + KN_H + OTS : 18);
+        int rows = (pl.Count + kol - 1) / kol;
+        for (int i = 0; i < pl.Count; i++)
+            ryad.Controls.Add(Plitka(pl[i], new Rectangle(i % kol * (tw + PROM), i / kol * (h + PROM), tw, h)));
+        ryad.Height = rows * h + (rows - 1) * PROM;
+        return ryad;
+    }
+
+    Kartochka Plitka(Plit p, Rectangle r)
+    {
+        var kar = new Kartochka { Name = "plit-" + p.Id, Bounds = r, Margin = Padding.Empty, AccessibleDescription = p.Sost, AccessibleName = p.Zag };
+        kar.Controls.Add(Abz(p.Zag, OTS, 14, r.Width - 2 * OTS, null, F_ZAG));
+        var zn = new ZnakSost { Sost = p.Sost, Location = new Point(OTS, 47), Size = new Size(22, 22) };
+        var s = Abz(p.Stroka, OTS + 30, 48, r.Width - 2 * OTS - 30);
+        kar.Controls.Add(zn); kar.Controls.Add(s);
+        if (!string.IsNullOrEmpty(p.Podskazka)) foreach (Control c in new Control[] { kar, zn, s }) podskazki.SetToolTip(c, p.Podskazka);
+        // кнопки — в одну строку внизу: поровну, если подписи влезают, иначе — по длине подписей
+        int n = p.Kn.Count;
+        if (n > 0)
+        {
+            int dost = r.Width - 2 * OTS - 8 * (n - 1), x = OTS, ravn = dost / n;
+            var nuzhno = p.Kn.Select(kn => TextW(kn.Text, F_TEKST) + 24).ToList();
+            bool porovnu = nuzhno.All(v => v <= ravn);
+            for (int i = 0; i < n; i++)
+            {
+                int bw = i == n - 1 ? r.Width - OTS - x : porovnu ? ravn : dost * nuzhno[i] / nuzhno.Sum();
+                p.Kn[i].Bounds = new Rectangle(x, r.Height - OTS - KN_H, bw, KN_H); p.Kn[i].Margin = Padding.Empty; kar.Controls.Add(p.Kn[i]); x += bw + 8;
+            }
+        }
+        return kar;
+    }
+
+    // Karing выключен — замер, смена сервера и выбор для программ не пройдут: сказать сразу, а не через минуту ожидания
     bool KaringVyklyuchen() { return sost != null && !Pult.Sboy(sost) && Pult.G(sost, "karing") is bool && !Pult.B(sost, "karing"); }
 
-    // ---------- живое: скорость программ раз в 5 с ----------
+    // Где стоит karing.exe — как у сторожа (storozh.py, karing_exe): из service.json самого Karing, иначе обычные места
+    static string NaytiKaring()
+    {
+        try
+        {
+            var mesta = new List<string>();
+            string sj = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"karing\karing\service.json");
+            if (File.Exists(sj))
+            {
+                var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(sj));
+                string wd = Pult.S(d, "work_dir");
+                if (wd != "") mesta.Add(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(wd.TrimEnd('\\', '/'))) ?? "", "karing.exe"));
+            }
+            mesta.Add(Path.Combine(Environment.GetEnvironmentVariable("ProgramW6432") ?? Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Karing\karing.exe"));
+            mesta.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"Karing\karing.exe"));
+            mesta.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Programs\Karing\karing.exe"));
+            return mesta.FirstOrDefault(File.Exists);
+        }
+        catch { return null; }
+    }
+
+    // «Запустить Karing»: через Проводник (Karing не зависит от окна), через 10 с — спросить сторожа заново
+    void ZapustitKaring()
+    {
+        if (suho) { Zapis("[тест] запуск Karing"); return; }
+        var exe = NaytiKaring();
+        if (exe == null) { zanyatoStroka.Text = "Не нашёл Karing на этом компьютере — установите его и добавьте подписку VPN."; return; }
+        try { Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"), "\"" + exe + "\"") { UseShellExecute = false }); }
+        catch (Exception e) { zanyatoStroka.Text = "Не запустил Karing: " + e.Message; return; }
+        Zapis("запуск Karing: " + exe);
+        zanyatoStroka.Text = "Запускаю Karing. Если подключение в нём не включится само — включите его.";
+        var t = new System.Windows.Forms.Timer { Interval = 10000 };
+        taymery.Add(t);
+        t.Tick += (s, e) => { t.Stop(); taymery.Remove(t); t.Dispose(); Obnovit(() => zanyatoStroka.Text = ""); };
+        t.Start();
+    }
+
+    void VklyuchitZadaniya() { Deystvie("Включение проверки каждые 10 минут", new[] { "ustanovit-zadaniya" }, null); }
+    void ProveritSnova() { zanyatoStroka.Text = "Спрашиваю сторожа…"; Obnovit(() => zanyatoStroka.Text = ""); }
+
+    // ---------- живое: скорость раз в 5 с ----------
     Dictionary<string, object> skorData;
     readonly Dictionary<string, Tuple<Nadpis, Uroven, Nadpis>> zhivye = new Dictionary<string, Tuple<Nadpis, Uroven, Nadpis>>();
     bool skorIdet;
-
     Dictionary<string, object> setData, testData;
-    Nadpis setVniz, setVverh, setVpn;
+    string testKogdaSyr = "";
+    Chislo setVniz, setVverh;
+    NadpisImya setTop;
     bool setIdet, testIdet;
 
     void ObnovitSkorosti()
@@ -100,363 +349,145 @@ partial class Okno
         }
     }
 
+    // «0,11 МБ/с» → число и единица отдельно (крупное число и единица на одной линии)
+    static string[] Razbit(string mb) { int i = mb.LastIndexOf(' '); return i > 0 ? new[] { mb.Substring(0, i), mb.Substring(i + 1) } : new[] { mb, "" }; }
+
     void PokazatSet()
     {
         if (setVniz == null || setVniz.IsDisposed || setData == null) return;
-        if (Pult.Sboy(setData)) { setVniz.Text = setVverh.Text = setVpn.Text = "—"; return; }
-        setVniz.Text = Pult.Ch(Pult.G(setData, "vniz")).ToString("0.00");
-        setVverh.Text = Pult.Ch(Pult.G(setData, "vverh")).ToString("0.00");
-        setVpn.Text = Pult.Ch(Pult.G(setData, "vpn")).ToString("0.00");
+        foreach (var t in new[] { Tuple.Create(setVniz, "vniz"), Tuple.Create(setVverh, "vverh") })
+        {
+            if (Pult.Sboy(setData)) { t.Item1.Znach = "—"; t.Item1.Ed = ""; continue; }
+            var r = Razbit(MBs(Pult.Ch(Pult.G(setData, t.Item2))));
+            t.Item1.Znach = r[0]; t.Item1.Ed = r[1];
+        }
+    }
+
+    // служебные программы самого сторожа (Python пульта и проверок, curl замеров) — в списках не показываем
+    static bool Sluzhebnaya(string exe)
+    {
+        var e = (exe ?? "").ToLowerInvariant();
+        return e == "python.exe" || e == "pythonw.exe" || e == "curl.exe";
     }
 
     void PokazatSkorosti()
     {
         var sk = Pult.D(Pult.G(skorData, "skorosti"));
-        double max = Math.Max(0.5, sk.Values.Select(v => Pult.Ch(Pult.G(Pult.D(v), "mbayt"))).DefaultIfEmpty(0).Max());
         foreach (var kv in zhivye)
         {
             if (kv.Value.Item1.IsDisposed) continue;
             object v; double mb = 0; string kuda = null;
             bool est = sk.TryGetValue(kv.Key, out v);
             if (est) { mb = Pult.Ch(Pult.G(Pult.D(v), "mbayt")); kuda = Pult.S(Pult.D(v), "kuda"); }
-            kv.Value.Item1.Text = est ? MBs(mb) : skorData == null ? "…" : "не видно";
-            kv.Value.Item2.Dolya = mb / max; kv.Value.Item2.Invalidate();
-            if (!string.IsNullOrEmpty(kuda) && kv.Value.Item3 != null) kv.Value.Item3.Text = Pult.Chisto(kuda);
+            kv.Value.Item1.Text = est ? MBs(mb) : "—";
+            if (!est && skorData != null) podskazki.SetToolTip(kv.Value.Item1, "Скорость этой программы сейчас не видна.");
+            if (kv.Value.Item2 != null) { kv.Value.Item2.Dolya = Math.Min(1, mb / 5); kv.Value.Item2.Invalidate(); }
+            if (!string.IsNullOrEmpty(kuda) && kv.Value.Item3 != null) { kv.Value.Item3.Text = KudaTekst(kuda); podskazki.SetToolTip(kv.Value.Item3, kv.Value.Item3.Text); }
         }
+        if (setTop != null && !setTop.IsDisposed)
+        {
+            string t = "";
+            // по программам не видно (Karing не запущен или не ответил) — строку не показываем: про Karing уже сказано выше
+            if (skorData != null && !Pult.Sboy(skorData))
+            {
+                var top = sk.Where(x => !Sluzhebnaya(x.Key)).Select(x => Tuple.Create(x.Key, Pult.Ch(Pult.G(Pult.D(x.Value), "mbayt")))).OrderByDescending(x => x.Item2).FirstOrDefault();
+                t = top != null && top.Item2 >= 0.05 ? "Больше всего качает " + Imya(top.Item1) + " — " + MBs(top.Item2) : "Программы сейчас почти ничего не качают";
+            }
+            setTop.Text = t;
+            podskazki.SetToolTip(setTop, t);
+        }
+    }
+
+    // значок программы — из самого exe (по пути запущенного процесса); не нашёлся — общий значок из шрифта
+    static readonly Dictionary<string, Bitmap> ikonki = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
+    static Bitmap IkonkaIzExe(string exe)
+    {
+        Bitmap b;
+        string k = exe ?? "";
+        if (ikonki.TryGetValue(k, out b)) return b;
+        b = null;
+        try
+        {
+            foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(k)))
+            {
+                try
+                {
+                    if (b != null) continue;
+                    string put = p.MainModule.FileName;
+                    using (var ic = Icon.ExtractAssociatedIcon(put))
+                    using (var bm = ic.ToBitmap())
+                    {
+                        b = new Bitmap(20, 20);
+                        using (var g = Graphics.FromImage(b)) { g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.DrawImage(bm, new Rectangle(0, 0, 20, 20)); }
+                    }
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
+        }
+        catch { }
+        ikonki[k] = b;
+        return b;
+    }
+    Control ZnachokProgrammy(string exe, int x, int y)
+    {
+        var b = IkonkaIzExe(exe);
+        if (b != null) return new PictureBox { Image = b, Size = new Size(20, 20), Location = new Point(x, y), BackColor = Color.Transparent, Name = "ikonka" };
+        return Zk(Znachok(exe), x, y - 1, 12f);
     }
 
     static string Znachok(string exe)
     {
         var e = (exe ?? "").ToLowerInvariant();
-        if (e.Contains("zen") || e.Contains("edge") || e.Contains("chrome") || e.Contains("firefox") || e.Contains("browser")) return Zn.Globus;
-        if (e.Contains("steam")) return "";       // игра
-        if (e.Contains("discord") || e.Contains("telegram")) return "";   // сообщение
-        if (e.Contains("claude")) return "";
-        if (e.Contains("python") || e.Contains("curl")) return "";       // командная строка
-        return Zn.Prilozh;
+        if (e.Contains("zen") || e.Contains("edge") || e.Contains("chrome") || e.Contains("firefox") || e.Contains("browser") || e.Contains("opera") || e.Contains("yandex")) return Zn.Globus;
+        if (e.Contains("steam") || e.Contains("roblox") || e.Contains("dota") || e.Contains("game")) return Zn.Igra;
+        if (e.Contains("discord") || e.Contains("telegram")) return Zn.Soobshch;
+        if (e.Contains("claude")) return Zn.Chat;
+        if (e.Contains("python") || e.Contains("curl") || e.Contains("powershell") || e.Contains("cmd")) return Zn.Komstroka;
+        return Zn.OknoProg;
     }
 
+    // имя программы для человека: известным — их название, остальным — имя файла без «.exe»
     static string Imya(string exe)
     {
         string n;
         try { n = Path.GetFileNameWithoutExtension(exe ?? ""); } catch { n = exe ?? ""; }
         var izv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
-            { "zen", "Zen" }, { "msedge", "Edge" }, { "claude", "Claude" }, { "Discord", "Discord" }, { "Telegram", "Telegram" },
-            { "steam", "Steam" }, { "steamwebhelper", "Steam (окно)" }, { "RobloxPlayerBeta", "Roblox" }, { "pythonw", "Сторож (Python)" }, { "python", "Python" } };
-        string v; return izv.TryGetValue(n, out v) ? v : n;
+            { "zen", "Zen" }, { "msedge", "Edge" }, { "msedgewebview2", "Edge (встроенный в программы)" }, { "chrome", "Chrome" }, { "firefox", "Firefox" },
+            { "claude", "Claude" }, { "Discord", "Discord" }, { "Telegram", "Telegram" }, { "steam", "Steam" }, { "steamwebhelper", "Steam: магазин и чат" },
+            { "RobloxPlayerBeta", "Roblox" }, { "pythonw", "Сторож сети" }, { "python", "Python" }, { "tailscaled", "Tailscale" }, { "tailscale-ipn", "Tailscale" },
+            { "svchost", "Службы Windows" }, { "explorer", "Проводник" }, { "Code", "VS Code" }, { "obs64", "OBS" }, { "Spotify", "Spotify" },
+            { "EpicGamesLauncher", "Epic Games" }, { "Battle.net", "Battle.net" }, { "OneDrive", "OneDrive" }, { "scrcpy", "Экран телефона" }, { "karing", "Karing" },
+            { "gamingservices", "Службы игр Xbox" }, { "MpDefenderCoreService", "Защитник Windows" }, { "MsMpEng", "Защитник Windows" }, { "gamingservicesnet", "Службы игр Xbox" }, { "artcraft-launcher", "ArtCraft" }, { "XboxPcApp", "Xbox" } };
+        string v; if (izv.TryGetValue(n, out v)) return v;
+        n = n.Replace('-', ' ').Replace('_', ' ').Trim();
+        return n.Length > 0 ? char.ToUpper(n[0]) + n.Substring(1) : n;
     }
 
-    // ---------- Монитор (главная) ----------
-    Panel StrGlavnaya()
+    // куда программа идёт сейчас — словами без противоречий: «Германия, напрямую» → «Через VPN (Германия) и напрямую»
+    static string KudaTekst(string seychas)
     {
-        var k = Kolonka(); int W = Shir;
-        bool est = sost != null;
-        if (est && Pult.Sboy(sost))
-        {
-            bool netPy = Pult.B(sost, "net_python");
-            k.Controls.Add(KartaOshibki(W, netPy ? "Сторож не может работать без Python" : "Сторож не ответил", Pult.Info(sost),
-                () => { sost = null; Perestroit(); Obnovit(); }));
-            if (!netPy) k.Controls.Add(Tx("Окно спрашивает сторожа раз в минуту само. Если ошибка не уходит — подробности в журнале окна: файл storozh-okno.log рядом с программой.", true));
-            return k;
-        }
-        var bedy = Pult.L(sost, "bedy").OfType<string>().Where(b => b.Trim() != "").ToList();
-        var st = Pult.D(Pult.G(sost, "stat"));
-        bool karing = Pult.B(sost, "karing");
-        // список первичной настройки (DOGOVOR-hod.md §2): виден, пока есть несделанный обязательный пункт и он не скрыт
-        var nastr = Pult.Slovari(sost, "nastroyka");
-        bool pokazNastr = est && nastr.Count > 0 && !Pult.B(sost, "nastroyka_skryta") && nastr.Any(p => !Pult.B(p, "gotovo") && !Pult.B(p, "neobyaz"));
-
-        // состояние одной строкой + кнопки (узкое окно — кнопки под текстом); Claude — не в подписи, а значком справа
-        Color cv = !est ? pal.Liniya : bedy.Count == 0 ? Zel : (karing ? Zhelt : Kras);
-        string kogda = Kogda(Pult.S(sost, "posledniy"));
-        bool zapUst = Pult.B(sost, "zapret") || Pult.S(sost, "strategiya") != "";
-        string podp = est ? (Pult.B(sost, "zapret") ? "zapret работает" : zapUst ? "zapret не работает" : "zapret не установлен") +
-                            "  ·  " + (kogda != "" ? "сторож проверял сеть " + kogda : "сторож ещё не проверял сеть") : "";
-        const string CHTO_BUDET = "«Проверить» — сторож сразу проверит сеть и починит, что сломано (интернет может моргнуть). «Лучший сервер» — 2–5 минут, интернет пару раз моргнёт.";
-        var cz = Pult.D(Pult.G(sost, "claude_znachok"));
-        var znCl = est && Pult.B(cz, "pokazat") ? ZnachokClaude(cz) : null;
-        int znW = znCl != null ? znCl.Width + 12 : 0;
-        bool shirokoVerh = W >= 820;
-        int tekstW = shirokoVerh ? W - 64 - 16 - 350 - znW : W - 64 - 16;
-        int zagW = shirokoVerh ? tekstW : W - 62 - 16 - znW;
-        int podpH = est ? VysTeksta(podp, tekstW) : 0;
-        int knY = shirokoVerh ? 13 : 40 + podpH + 10;
-        int budX = shirokoVerh ? W - 346 : 64, budW = shirokoVerh ? 330 : W - 64 - 16;
-        int budH = est ? VysTeksta(CHTO_BUDET, budW) : 0;
-        int vys = shirokoVerh ? Math.Max(Math.Max(64, 40 + podpH + 12), est ? knY + 38 + 6 + budH + 10 : 64) : knY + 38 + (est ? 6 + budH : 0) + 12;
-        var top = new Kartochka { Name = "glavnaya-sostoyanie", Width = W, Height = vys, Margin = new Padding(0, 0, 0, 12), Ottenok = Ris.Smes(pal.Poverhnost, cv, pal.Temnaya ? 0.16 : 0.10) };
-        top.Controls.Add(new Krug { Size = new Size(36, 36), Location = new Point(14, 14), Cvet = cv, Galka = est && bedy.Count == 0 });
-        top.Controls.Add(Np1(!est ? "Смотрю…" : bedy.Count == 0 ? "Всё работает" : "Есть что поправить", 62, 10, zagW, false, new Font("Segoe UI Semibold", 13f), false));
-        if (est) top.Controls.Add(Np(podp, 64, 40, true, tekstW));
-        var k1 = KnZ("Проверить", Zn.Obnovit, () => Deystvie("Проверка сети", new[] { "proverka" }, null), true, 150);
-        var k2 = KnZ("Лучший сервер", Zn.Skorost, NaytiLuchshiy, false, 180);
-        podskazki.SetToolTip(k1, "Сторож сразу проверит VPN, сайты и программы и починит, что сломано.\nЕсли чинить нужно — Karing перезапустится, интернет моргнёт на пару секунд.");
-        podskazki.SetToolTip(k2, "Замерит скорость всех серверов VPN и поставит самый быстрый.\n2–5 минут, интернет пару раз моргнёт.");
-        k1.Location = shirokoVerh ? new Point(W - 346, knY) : new Point(64, knY);
-        k2.Location = shirokoVerh ? new Point(W - 192, knY) : new Point(64 + 160, knY);
-        k1.Margin = k2.Margin = Padding.Empty;
-        top.Controls.Add(k1); top.Controls.Add(k2);
-        if (est) top.Controls.Add(Np(CHTO_BUDET, budX, knY + 38 + 6, true, budW));
-        if (znCl != null)
-        {
-            // правый угол: на узком окне — над кнопками, на широком — левее кнопок, по их середине
-            znCl.Location = shirokoVerh ? new Point(W - 346 - 12 - znCl.Width, knY + 6) : new Point(W - 14 - znCl.Width, 12);
-            top.Controls.Add(znCl);
-        }
-        k.Controls.Add(top);
-        if (pokazNastr) k.Controls.Add(KartaNastroyki(W, nastr));
-
-        // что сделать сейчас — только если есть (то, что уже стоит в списке «Настройка», второй раз не показываем)
-        Func<string, bool> vSpiske = id => pokazNastr && nastr.Any(p => Pult.S(p, "id") == id && !Pult.B(p, "gotovo"));
-        foreach (var b in bedy)
-        {
-            if ((b.StartsWith("Karing") && vSpiske("karing")) || (b.StartsWith("Сторож не запускается") && vSpiske("zadaniya")) || (b.StartsWith("zapret") && vSpiske("zapret"))) continue;
-            Knopa kn = null; string pod = null;
-            if (b.StartsWith("zapret"))
-            {
-                // службы нет и настройки обхода в реестре нет — zapret не поставлен: подбирать нечего, сначала поставить
-                if (!zapUst)
-                {
-                    pod = "Похоже, zapret не установлен. Без него YouTube и голос Discord идут только через VPN.";
-                    kn = Kn("Поставить zapret", () => Otkryt("zapret"), true, 210);
-                }
-                else
-                {
-                    pod = "«Подобрать настройку» переберёт настройки обхода в zapret и поставит самую надёжную. Около 10 минут — всё это время интернет без VPN рвётся.";
-                    kn = Kn("Подобрать настройку", PodobratZapret, true, 210);
-                }
-            }
-            else if (b.StartsWith("Пустить через VPN"))
-            {
-                pod = "Сторож пустит эти сайты через VPN. Karing перезапустится — интернет моргнёт на пару секунд.";
-                kn = Kn("Поправить сейчас", () => Deystvie("Проверка сети и правка", new[] { "proverka" }, null), true, 210);
-            }
-            else if (b.StartsWith("Сторож не запускается"))
-            {
-                pod = "Сторож будет сам проверять сеть каждые 10 минут, даже когда это окно закрыто. Прав администратора не нужно.";
-                kn = Kn("Включить", VklyuchitZadaniya, true, 210);
-            }
-            else if (b.StartsWith("Karing"))
-            {
-                pod = "Запустите Karing и включите в нём подключение (режим «Правила»). Без Karing VPN не работает.";
-                kn = Kn("Проверить снова", ProveritSnova, false, 210);
-            }
-            int tw = W - 44 - 240;
-            int h1 = VysTeksta(b, tw), h2 = pod != null ? VysTeksta(pod, tw) + 4 : 0;
-            var r = new Kartochka { Width = W, Height = Math.Max(52, h1 + h2 + 32), Margin = new Padding(0, 0, 0, 8) };
-            r.Controls.Add(Zk(Zn.Preduprezhd, 16, 16, 12f, Zhelt));
-            r.Controls.Add(Np(b, 44, 16, false, tw));
-            if (pod != null) r.Controls.Add(Np(pod, 44, 16 + h1 + 4, true, tw));
-            if (kn != null) { kn.Location = new Point(W - 224, 7); kn.Margin = Padding.Empty; r.Controls.Add(kn); }
-            k.Controls.Add(r);
-        }
-        if (!est) return k;
-
-        // спидометр + сутки
-        bool uzko = W < 820;
-        int suW = uzko ? W : W - 242;
-        var ryad = new Panel { Width = W, Height = uzko ? 452 : 220, Margin = new Padding(0, 0, 0, 12) };
-        var sp = new Kartochka { Width = uzko ? W : 230, Height = 220, Location = new Point(0, 0) };
-        double skor = Pult.Ch(Pult.G(sost, "skorost"));
-        var vyb = Spiski(st, "vybory");
-        var proshlye = vyb.Take(Math.Max(0, vyb.Count - 1)).Select(v => Pult.Ch(Pult.El(v, 2))).Where(z => z > 0).ToList();
-        double obychno = proshlye.Count > 0 ? proshlye.Average() : 0;
-        sp.Controls.Add(Np("Скорость VPN", 16, 12, true));
-        sp.Controls.Add(new Spidometr { Zn = Math.Round(skor / 8, 1), Max = Math.Max(40, skor / 8), Ed = "МБ/с", Location = new Point(15, 34), Size = new Size(200, 120) });
-        string server = Pult.Chisto(Pult.S(sost, "server"));
-        sp.Controls.Add(Np1(!karing ? "Karing выключен" : server == "" ? "сервер не выбран" : server + (skor > 0 ? " · последний замер" : " · ещё не замерялся"), 16, 158, 200, false));
-        if (obychno > 0) sp.Controls.Add(Np1("обычно ~" + (obychno / 8).ToString("0") + " МБ/с", 16, 182, 200));
-        ryad.Controls.Add(sp);
-
-        var su = new Kartochka { Width = suW, Height = 220, Location = uzko ? new Point(0, 232) : new Point(242, 0) };
-        su.Controls.Add(Zg("Последние сутки", 16, 12));
-        su.Controls.Add(Np1("цвет — как работал VPN в этот час, наведите — подробности", 150, 15, suW - 166));
-        var ps = new PolosaSutok { Location = new Point(16, 46), Size = new Size(suW - 32, 54) };
-        var chasy = Pult.L(st, "chasy").ToList();
-        for (int h = 0; h < 24 && h < chasy.Count; h++) { var c = Spisok(chasy[h]); ps.Obryvy[h] = Pult.Cel(Pult.El(c, 0)); ps.Sekund[h] = Pult.Cel(Pult.El(c, 1)); }
-        su.Controls.Add(ps);
-        int lx = 16;
-        foreach (var l in new[] { Tuple.Create(PolosaSutok.Zel, "без обрывов"), Tuple.Create(PolosaSutok.Zhel, "1–2 обрыва"), Tuple.Create(PolosaSutok.Kras, "3 и больше или дольше минуты") })
-        {
-            int tw = TextRenderer.MeasureText(l.Item2, Font).Width + 6;
-            if (lx + 18 + tw > suW - 16) break;
-            su.Controls.Add(new Nadpis { Text = "●", ForeColor = l.Item1, Tag = l.Item1, Location = new Point(lx, 108) });
-            su.Controls.Add(Np1(l.Item2, lx + 18, 108, tw, true, null, false));
-            lx += 18 + tw + 16;
-        }
-        int x = 16, shag = (suW - 32) / 3;
-        foreach (var c in new[] { Tuple.Create("обрывов", Pult.Cel(Pult.G(sost, "miganiya")).ToString()), Tuple.Create("VPN не отвечал всего", Vremya(Pult.Cel(Pult.G(st, "bez_vpn")))),
-                                  Tuple.Create("самый долгий обрыв", Vremya(Pult.Cel(Pult.G(st, "samyy_dlinnyy")))) })
-        {
-            su.Controls.Add(Np1(c.Item1, x, 142, shag - 8));
-            su.Controls.Add(Np1(c.Item2, x - 2, 162, shag - 6, false, new Font("Segoe UI Semibold", 15f)));
-            x += shag;
-        }
-        ryad.Controls.Add(su);
-        k.Controls.Add(ryad);
-
-        // сеть сейчас + тест скорости (узкое окно — кнопка теста под цифрами)
-        bool shirokoSet = W >= 840;
-        int nizSet = shirokoSet ? 120 : 168;
-        var set = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, 12) };
-        set.Controls.Add(Zg("Сеть сейчас", 16, 12));
-        set.Controls.Add(Np1("весь компьютер, обновляется каждые 5 с", 130, 15, Math.Min(320, W - 146)));
-        int sx = 16;
-        foreach (var c in new[] { Tuple.Create("", "Скачивание", "МБ/с"), Tuple.Create("", "Отправка", "МБ/с"), Tuple.Create(Zn.Shit, "Из них через VPN", "МБ/с") })
-        {
-            set.Controls.Add(Zk(c.Item1, sx, 46, 11f));
-            set.Controls.Add(Np1(c.Item2, sx + 22, 44, 160));
-            var ch = new Nadpis { Text = "…", Font = new Font("Segoe UI Semibold", 17f), Location = new Point(sx - 2, 66) };
-            set.Controls.Add(ch);
-            set.Controls.Add(Np(c.Item3, sx + 86, 78, true));
-            if (c.Item2 == "Скачивание") setVniz = ch; else if (c.Item2 == "Отправка") setVverh = ch; else setVpn = ch;
-            sx += 196;
-        }
-        var kt = KnZ(testIdet ? "Идёт тест…" : "Тест скорости", Zn.Skorost, () =>
-        {
-            if (testIdet) return;
-            testIdet = true;
-            if (!Deystvie("Тест скорости", new[] { "test-seti" }, d => { testIdet = false; testData = d; })) testIdet = false;
-        }, true, 200);
-        kt.Location = shirokoSet ? new Point(W - 216, 46) : new Point(16, 116); kt.Margin = Padding.Empty; set.Controls.Add(kt);
-        const string TEST_CHTO = "около 30 с: скачает по 25 МБ через VPN и напрямую";
-        podskazki.SetToolTip(kt, "Скачает 25 МБ через VPN и 25 МБ напрямую и покажет обе скорости. Около 30 секунд, интернет не рвётся.");
-        set.Controls.Add(shirokoSet ? Np1(TEST_CHTO, W - 216, 88, 200) : Np1(TEST_CHTO, 226, 125, W - 242));
-        int setH = nizSet;
-        if (testData != null && Pult.Sboy(testData))
-        {
-            string t = "Тест скорости не прошёл: " + Pult.Info(testData);
-            set.Controls.Add(Np(t, 16, nizSet, true, W - 32));
-            setH = nizSet + VysTeksta(t, W - 32) + 14;
-        }
-        else if (testData != null)
-        {
-            var v = Pult.D(Pult.G(testData, "vpn")); var pr = Pult.D(Pult.G(testData, "pryamo"));
-            double mv = Pult.Ch(Pult.G(v, "mbit")), mp = Pult.Ch(Pult.G(pr, "mbit")), mx = Math.Max(1, Math.Max(mv, mp));
-            int y0 = nizSet;
-            set.Controls.Add(Np("Тест скорости", 16, y0, true));
-            string srv = Pult.Chisto(Pult.S(testData, "server"));
-            int rezX = W - 270;
-            foreach (var t in new[] { Tuple.Create(srv != "" ? "Через VPN (" + srv + ")" : "Через VPN", mv, Pult.S(v, "ping")), Tuple.Create("Напрямую", mp, Pult.S(pr, "ping")) })
-            {
-                y0 += 30;
-                set.Controls.Add(Np1(t.Item1, 16, y0, 216, false));
-                set.Controls.Add(new Uroven { Location = new Point(240, y0 + 7), Size = new Size(Math.Max(40, rezX - 250), 9), Dolya = t.Item2 / mx });
-                var rez = Np1(t.Item2 > 0 ? MBsIzMbit(t.Item2) + (t.Item3 != "" ? " · отклик " + t.Item3 + " мс" : "") : "не прошло", rezX, y0, 254, false);
-                rez.Tag = t.Item2 >= 50 ? Zel : t.Item2 > 0 ? Zhelt : Kras;
-                set.Controls.Add(rez);
-            }
-            string vv = mv <= 0 ? "Через VPN тест не прошёл — Karing выключен или сервер не отвечает." :
-                        mv >= 50 && mp >= 50 ? "И через VPN, и напрямую быстро — всё в порядке." : mv < 50 && mp >= 50 ? "VPN медленнее 6 МБ/с — попробуйте «Лучший сервер» (вверху)." :
-                        mp < 50 && mv >= 50 ? "Напрямую медленно — похоже, тормозит провайдер или zapret." : "Медленно везде — похоже на провайдера или Wi-Fi.";
-            set.Controls.Add(Np(vv, 16, y0 + 32, true, W - 32));
-            setH = y0 + 32 + VysTeksta(vv, W - 32) + 14;
-        }
-        set.Height = setH;
-        k.Controls.Add(set);
-        PokazatSet();
-
-        // сейчас в интернете
-        k.Controls.Add(KartochkaProgramm(W));
-
-        var igra = Pult.L(sost, "igra").OfType<string>().ToList();
-        if (igra.Count > 0)
-        {
-            int zv = Pult.Cel(Pult.G(Pult.D(Pult.G(sost, "nastroyki")), "zvonok_min"));
-            k.Controls.Add(Tx("Сейчас: " + string.Join(", ", igra) + ". Пока это идёт, сторож не перезапускает Karing, чтобы не оборвать" + (zv > 0 ? " (звонок ждёт не дольше " + zv + " мин)." : "."), true));
-        }
-        return k;
+        var s = (Pult.Chisto(seychas) ?? "").Trim();
+        if (s == "") return "";
+        if (s.Equals("мимо Karing", StringComparison.OrdinalIgnoreCase)) return "Мимо Karing (VPN)";
+        if (s.Equals("сейчас не в сети", StringComparison.OrdinalIgnoreCase)) return "Сейчас не в сети";
+        var chasti = s.Split(',').Select(x => x.Trim()).Where(x => x != "").ToList();
+        bool napr = chasti.Any(x => x.Equals("напрямую", StringComparison.OrdinalIgnoreCase));
+        var srv = chasti.Where(x => !x.Equals("напрямую", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (srv.Count == 0) return "Напрямую";
+        return "Через VPN (" + string.Join(", ", srv) + ")" + (napr ? " и напрямую" : "");
     }
 
-    void VklyuchitZadaniya() { Deystvie("Включение проверки каждые 10 минут", new[] { "ustanovit-zadaniya" }, null); }
-    void ProveritSnova() { zanyatoStroka.Text = "Проверяю…"; Obnovit(() => zanyatoStroka.Text = ""); }
-
-    // Значок-«пилюля» Claude в правом углу главной карточки (его выбор 21.11): «● Claude · Англия»,
-    // точка зелёная — отвечает, красная — нет, серая — не проверяли; при наведении — когда проверено.
-    Kartochka ZnachokClaude(Dictionary<string, object> cz)
+    // у новичка «мимо Karing» значит просто «Karing не запущен»: программа идёт напрямую
+    string KudaTekstN(string seychas)
     {
-        var okV = Pult.G(cz, "ok");
-        Color c = okV is bool ? ((bool)okV ? Zel : Kras) : Sery;
-        string srv = Pult.Chisto(Pult.G(cz, "server") as string ?? "").Trim();
-        string t = "Claude" + (srv != "" ? " · " + srv : "");
-        int tw = Math.Min(170, TextRenderer.MeasureText(t, Font).Width + 4);
-        var z = new Kartochka { Name = "claude-znachok", Size = new Size(26 + tw + 10, 26) };
-        var tochka = new Nadpis { Text = "●", Tag = c, ForeColor = c, Location = new Point(8, 3) };
-        var n = Np1(t, 26, 3, tw, false, null, false);
-        z.Controls.Add(tochka); z.Controls.Add(n);
-        string kogda = Pult.Chisto(Convert.ToString(Pult.G(cz, "proveren") ?? "", CultureInfo.CurrentCulture)).Trim();
-        string pod = (okV is bool ? ((bool)okV ? "Claude отвечает" : "Claude не отвечает") + (kogda != "" ? " — проверено " + kogda : "") : "Claude ещё не проверяли") +
-                     (srv != "" ? "\nСторож пускает Claude через сервер «" + srv + "»." : "");
-        foreach (Control x in new Control[] { z, tochka, n }) podskazki.SetToolTip(x, pod);
-        return z;
-    }
-
-    // Список первичной настройки на Мониторе (его выбор 21.11): «Настройка — 2 из 4», справа «Скрыть»;
-    // пункты с галочкой или пустым кружком, у несделанного — кнопка и короткий совет.
-    Kartochka KartaNastroyki(int W, List<Dictionary<string, object>> nastr)
-    {
-        var kar = new Kartochka { Name = "karta-nastroyki", Width = W, Margin = new Padding(0, 0, 0, 12) };
-        string zag = "Настройка — " + nastr.Count(p => Pult.B(p, "gotovo")) + " из " + nastr.Count;
-        var fz = new Font("Segoe UI Semibold", 11f);
-        kar.Controls.Add(Zg(zag, 16, 12));
-        int zx = 16 + TextRenderer.MeasureText(zag, fz).Width + 10;
-        var skr = Kn("Скрыть", () =>
-        {
-            if (sost != null) sost["nastroyka_skryta"] = true;   // сразу, не дожидаясь сторожа
-            Perestroit();
-            Sohranit("nastroyka_skryta", true);
-        }, false, 100);
-        skr.Height = 30; skr.Location = new Point(W - 16 - skr.Width, 9); skr.Margin = Padding.Empty;
-        podskazki.SetToolTip(skr, "Спрятать этот список. Вернуть его можно в «Настройках», раздел «Монитор».");
-        kar.Controls.Add(skr);
-        kar.Controls.Add(Np1("что осталось сделать, чтобы сторож работал сам", zx, 15, W - 16 - skr.Width - 12 - zx));
-        int y = 50;
-        foreach (var p in nastr)
-        {
-            string id = Pult.S(p, "id");
-            bool g = Pult.B(p, "gotovo"), neob = Pult.B(p, "neobyaz");
-            string tekst = Pult.Chisto(Pult.G(p, "tekst") as string ?? "").Trim();
-            if (tekst == "") tekst = id != "" ? id : "Пункт настройки";
-            string sovet = g ? "" : Pult.Chisto(Pult.G(p, "sovet") as string ?? "").Trim();
-            var knopki = new List<Knopa>();
-            if (!g)
-            {
-                if (id == "karing") knopki.Add(Kn("Проверить снова", ProveritSnova, false, 160));
-                else if (id == "zadaniya") knopki.Add(Kn("Включить", VklyuchitZadaniya, true, 130));
-                else if (id == "server") knopki.Add(Kn("Замерить", NaytiLuchshiy, true, 130));
-                else if (id == "zapret")
-                {
-                    knopki.Add(Kn("Поставить", () => Otkryt("zapret"), false, 120));
-                    if (neob)
-                        knopki.Add(Kn("Не нужно", () =>
-                        {
-                            p["gotovo"] = true;   // сразу убрать из несделанных, сторож запомнит
-                            Perestroit();
-                            Sohranit("zapret_ne_nuzhen", true);
-                        }, false, 110));
-                }
-            }
-            if (id == "zadaniya" && knopki.Count > 0) podskazki.SetToolTip(knopki[0], "Сторож будет сам проверять сеть каждые 10 минут, даже когда окно закрыто. Прав администратора не нужно.");
-            if (id == "server" && knopki.Count > 0) podskazki.SetToolTip(knopki[0], "Замерю все серверы VPN и поставлю самый быстрый. 2–5 минут, интернет пару раз моргнёт.");
-            if (id == "zapret" && knopki.Count > 0) podskazki.SetToolTip(knopki[0], "Откроет раздел zapret: там кнопка «Скачать и поставить zapret».");
-            int knW = knopki.Sum(x => x.Width) + Math.Max(0, knopki.Count - 1) * 8;
-            int tx = 46, tw = W - tx - 16 - (knW > 0 ? knW + 16 : 0);
-            int h1 = VysTeksta(tekst, tw), h2 = sovet != "" ? VysTeksta(sovet, tw) : 0;
-            int rowH = Math.Max(knopki.Count > 0 ? 34 : 24, h1 + (h2 > 0 ? h2 + 2 : 0));
-            kar.Controls.Add(Zk(g ? Zn.GalkaKrug : Zn.Krug0, 16, y + 1, 12f, g ? (object)Zel : "vt"));
-            kar.Controls.Add(Np(tekst, tx, y + 2, g, tw));
-            if (h2 > 0) kar.Controls.Add(Np(sovet, tx, y + 4 + h1, true, tw));
-            int kx = W - 16 - knW;
-            foreach (var kb in knopki) { kb.Height = 32; kb.Location = new Point(kx, y); kb.Margin = Padding.Empty; kar.Controls.Add(kb); kx += kb.Width + 8; }
-            y += rowH + 10;
-        }
-        kar.Height = y + 4;
-        return kar;
+        string t = KudaTekst(seychas);
+        return t == "Мимо Karing (VPN)" && KaringVyklyuchen() ? "Напрямую — Karing не запущен" : t;
     }
 
     // скорость: всё в мегабайтах в секунду (1 МБ/с = 8 Мбит/с)
-    static string MBs(double mbayt) { return mbayt <= 0 ? "0 МБ/с" : mbayt < 0.01 ? "< 0,01 МБ/с" : mbayt < 10 ? mbayt.ToString("0.00") + " МБ/с" : mbayt.ToString("0.0") + " МБ/с"; }
-    static string MBsIzMbit(double mbit) { return MBs(mbit / 8); }
+    static string MBs(double mbayt) { return Chel.MB(mbayt); }
+    static string MBsIzMbit(double mbit) { return Chel.MBizMbit(mbit); }
 
     // «20.11.2026 21:50» → «в 21:50» сегодня, иначе «18.11 в 21:50»
     static string Kogda(string dt)
@@ -464,6 +495,8 @@ partial class Okno
         DateTime d;
         if (DateTime.TryParseExact(dt ?? "", "dd.MM.yyyy HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out d))
             return d.Date == DateTime.Today ? "в " + d.ToString("HH:mm") : d.ToString("dd.MM") + " в " + d.ToString("HH:mm");
+        if (DateTime.TryParseExact(dt ?? "", "dd.MM HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out d))
+            return d.Month == DateTime.Today.Month && d.Day == DateTime.Today.Day ? "в " + d.ToString("HH:mm") : d.ToString("dd.MM") + " в " + d.ToString("HH:mm");
         return (dt ?? "").Length >= 5 ? "в " + dt.Substring(dt.Length - 5) : "";
     }
 
@@ -479,179 +512,584 @@ partial class Okno
     void NaytiLuchshiy()
     {
         if (KaringVyklyuchen()) { zanyatoStroka.Text = "Сначала запустите Karing: без него серверы не замерить."; return; }
-        if (Sprosit("Замерю скорость всех серверов VPN и поставлю самый быстрый из надёжных. Займёт 2–5 минут, интернет пару раз моргнёт. Начать?"))
+        if (Sprosit("Сторож замерит скорость всех серверов VPN и подключит самый быстрый из надёжных. Это 2–5 минут, интернет пару раз моргнёт. Начать?"))
             Deystvie("Замер серверов", new[] { "zamer" }, d => servData = null);
     }
 
-    // монитор: кто сейчас в интернете и куда идёт
-    bool progIdet;
-    Kartochka KartochkaProgramm(int W)
+    // обрывы сервера за сутки: [обрывов, минут без ответа] из stat.nadezhnost (имена — без значков)
+    int[] ObryvyServera(string srv)
     {
-        var kar = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, 12) };
-        kar.Controls.Add(Zg("Сейчас в интернете", 16, 12));
-        kar.Controls.Add(Np1("скорость каждой программы, обновляется каждые 5 с", 180, 15, W - 196));
-        int y = 44;
-        if (progData == null) { kar.Controls.Add(Np("Смотрю, какие программы в сети…", 16, 48, true)); kar.Height = 84; ZagruzitProgrammy(); return kar; }
-        if (Pult.Sboy(progData))
-        {
-            string t = "Не смог узнать программы: " + Pult.Info(progData);
-            kar.Controls.Add(Np(t, 16, 48, true, W - 32));
-            kar.Height = 48 + VysTeksta(t, W - 32) + 14;
-            return kar;
-        }
-        var spisok = Pult.Slovari(progData, "programmy").Where(p => Pult.B(p, "v_seti") && Pult.S(p, "exe") != "").Take(7).ToList();
-        foreach (var p in spisok) y += StrokaProgrammy(kar, p, W, y, false);
-        if (spisok.Count == 0) { kar.Controls.Add(Np("Сейчас ни одна программа не в сети.", 16, 48, true)); y = 80; }
-        kar.Height = y + 8;
-        PokazatSkorosti();
-        return kar;
+        var nad = Pult.D(Pult.G(Pult.D(Pult.G(sost, "stat")), "nadezhnost"));
+        string c = (Pult.Chisto(srv) ?? "").Trim();
+        foreach (var kv in nad)
+            if (c != "" && (Pult.Chisto(kv.Key) ?? "").Trim() == c) { var l = Spisok(kv.Value); return new[] { Pult.Cel(Pult.El(l, 0)), Pult.Cel(Pult.El(l, 1)) }; }
+        return null;
     }
 
-    Nadpis ImyaProgrammy(string exe, int x, int y, int w)
+    // что показано на экранах (для самопроверки: одно и то же число на Мониторе и в «Серверах» должно совпадать)
+    internal readonly Dictionary<string, int> pokazanoObryvov = new Dictionary<string, int>();
+
+    // ---------- Монитор: сводка по всем данным ----------
+    class Svodka
     {
-        var n = Np1(Imya(exe), x, y, w, false, null, false);
-        podskazki.SetToolTip(n, exe);
-        return n;
+        public bool KaringIzv, Karing, ZapRab, ZapEst, ZapNeNuzhen, Zadaniya, Proveryal;
+        public string Server = "", KaringBeda = "", Posledniy = "";
+        public double SkorMbit;
+        public int Obryvy, BezVpn, Dolgiy;
+        public List<string> Pending = new List<string>(), Prochee = new List<string>(), Igra = new List<string>();
+        public List<Tuple<string, int>> PoServeram = new List<Tuple<string, int>>();
     }
 
-    // Одна строка программы; возвращает её высоту.
-    // Монитор: значок | имя | куда | полоса | скорость. «Программы»: имя и куда двумя строками, справа выбор
-    // (у правил ещё «Убрать»); узкое окно — выбор под именем.
-    int StrokaProgrammy(Kartochka kar, Dictionary<string, object> p, int W, int y, bool sVyborom, bool pravilo = false)
+    Svodka Svesti()
     {
-        string exe = Pult.S(p, "exe");
-        bool cherezKaring = Pult.B(p, "karing"), vSeti = Pult.B(p, "v_seti");
-        string kudaT = Pult.Chisto(Pult.S(p, "seychas"));
-        if (!sVyborom)
+        var s = new Svodka();
+        var bedy = Pult.L(sost, "bedy").OfType<string>().Select(b => b.Trim()).Where(b => b != "").ToList();
+        var nastr = new Dictionary<string, Dictionary<string, object>>(StringComparer.Ordinal);
+        foreach (var p in Pult.Slovari(sost, "nastroyka")) nastr[Pult.S(p, "id")] = p;
+        Func<string, Dictionary<string, object>> punkt = id => { Dictionary<string, object> p; return nastr.TryGetValue(id, out p) ? p : null; };
+        var nas = Pult.D(Pult.G(sost, "nastroyki"));
+        s.KaringIzv = Pult.G(sost, "karing") is bool;
+        s.Karing = Pult.B(sost, "karing");
+        var pk = punkt("karing");
+        string sovetK = pk != null && !Pult.B(pk, "gotovo") ? (Pult.G(pk, "sovet") as string ?? "").Trim() : "";
+        s.KaringBeda = sovetK != "" ? sovetK : bedy.FirstOrDefault(b => b.StartsWith("Karing")) ?? "";
+        s.Server = (Pult.Chisto(Pult.G(sost, "server") as string ?? "") ?? "").Trim();
+        s.SkorMbit = Pult.Ch(Pult.G(sost, "skorost"));
+        s.Posledniy = Pult.G(sost, "posledniy") as string ?? "";
+        s.Proveryal = s.Posledniy.Trim() != "";
+        s.Obryvy = Math.Max(0, Pult.Cel(Pult.G(sost, "miganiya")));
+        var st = Pult.D(Pult.G(sost, "stat"));
+        s.BezVpn = Math.Max(0, Pult.Cel(Pult.G(st, "bez_vpn"))); s.Dolgiy = Math.Max(0, Pult.Cel(Pult.G(st, "samyy_dlinnyy")));
+        foreach (var z in Spiski(st, "po_serveram"))
         {
-            int cKuda = 190, cPolosa = 430, shirPolosy = Math.Max(60, W - 140 - cPolosa), cSkor = cPolosa + shirPolosy + 10;
-            kar.Controls.Add(Zk(Znachok(exe), 16, y + 9, 12f));
-            kar.Controls.Add(ImyaProgrammy(exe, 46, y + 10, cKuda - 46 - 8));
-            var kuda = Np1(kudaT, cKuda, y + 10, cPolosa - cKuda - 10);
-            kar.Controls.Add(kuda);
-            var u = new Uroven { Location = new Point(cPolosa, y + 17), Size = new Size(shirPolosy, 7), Visible = cherezKaring };   // мимо Karing скорость не видна — полосы нет
-            kar.Controls.Add(u);
-            var mb = Np1(cherezKaring ? "…" : "не видно", cSkor, y + 10, W - 16 - cSkor, true, null, false);
-            kar.Controls.Add(mb);
-            if (cherezKaring) zhivye[exe] = Tuple.Create(mb, u, kuda);
-            else podskazki.SetToolTip(mb, "Программа выходит в интернет не через Karing — её скорость отдельно не видна. Общая нагрузка — в «Сеть сейчас».");
-            return 40;
+            string kto = Pult.Chisto(Pult.El(z, 0) as string ?? "").Trim();
+            if (kto != "") s.PoServeram.Add(Tuple.Create(kto, Pult.Cel(Pult.El(z, 1))));
         }
-
-        int pravW = 300 + (pravilo ? 104 : 0);
-        bool dve = W < 860;
-        int rowH = dve ? 96 : 54;
-        int xPrav = dve ? 46 : W - 16 - pravW, yPrav = dve ? y + 56 : y + 11;
-        int levW = dve ? W - 46 - 16 - 110 : Math.Min(260, xPrav - 46 - 160);
-        kar.Controls.Add(Zk(Znachok(exe), 16, dve ? y + 18 : y + 16, 12f));
-        kar.Controls.Add(ImyaProgrammy(exe, 46, y + 6, levW));
-        var kudaN = Np1(kudaT, 46, y + 28, levW);
-        kar.Controls.Add(kudaN);
-        Uroven ur; Nadpis skor;
-        string bezSkor = vSeti ? "не видно" : "—";
-        if (dve)
+        s.ZapRab = Pult.B(sost, "zapret");
+        s.ZapEst = Pult.G(sost, "zapret_est") is bool ? Pult.B(sost, "zapret_est") || s.ZapRab : s.ZapRab || (Pult.G(sost, "strategiya") as string ?? "").Trim() != "";
+        s.ZapNeNuzhen = !s.ZapRab && Pult.B(nas, "zapret_ne_nuzhen");
+        var pz = punkt("zadaniya");
+        s.Zadaniya = pz != null ? Pult.B(pz, "gotovo") : !bedy.Any(b => b.StartsWith("Сторож не запускается"));
+        foreach (var b in bedy)
         {
-            skor = Np1(cherezKaring ? "…" : bezSkor, W - 16 - 94, y + 6, 94, true, null, false);
-            ur = new Uroven { Location = new Point(W - 16 - 94, y + 36), Size = new Size(94, 6) };
+            if (b.StartsWith("Karing") || b.StartsWith("zapret") || b.StartsWith("Сторож не запускается")) continue;
+            if (b.StartsWith("Пустить через VPN")) s.Pending.Add(b); else s.Prochee.Add(b);
+        }
+        s.Igra = Pult.L(sost, "igra").OfType<string>().Where(x => x.Trim() != "").ToList();
+        return s;
+    }
+
+    // строка плитки VPN, когда Karing работает, но что-то не так: «в Karing нет серверов — добавьте…» → «В Karing нет серверов»
+    static string KaringStroka(string beda)
+    {
+        string t = (beda ?? "").Trim();
+        int i = t.IndexOf(" — ", StringComparison.Ordinal);
+        if (i > 0) t = t.Substring(0, i);
+        return Chel.Pervaya(t == "" ? "Karing работает не так" : t);
+    }
+
+    const string LEGENDA = "Это все случаи, когда VPN не отвечал вовсе — на любом сервере, в том числе на сервере Claude.\nКак обрывался каждый сервер — в разделе «Серверы».\n" +
+                           "Каждая клетка — час, справа — текущий. Зелёная — связь не пропадала, жёлтая — пропадала 1–2 раза, красная — 3 и больше или дольше минуты.\nНаведите на клетку — подробности.";
+
+    // Значок Claude (его выбор: только если сторож за ним следит) — в уголке шапки Монитора, просто значок и текст,
+    // не кнопка. Нажатие открывает «Серверы». Цвет: красный — Claude не отвечает; жёлтый — его сервер за сутки
+    // обрывается (то же правило и те же числа, что в «Серверах»). Сервер Claude закреплён намеренно — менять его отсюда нельзя.
+    Panel ZnachokClaude(Dictionary<string, object> cz, out string sostC)
+    {
+        var okV = Pult.G(cz, "ok");
+        string srv = Pult.Chisto(Pult.G(cz, "server") as string ?? "").Trim();
+        string kogda = Pult.Chisto(Convert.ToString(Pult.G(cz, "proveren") ?? "", CultureInfo.CurrentCulture)).Trim();
+        var ob = srv != "" ? ObryvyServera(srv) : null;
+        string so = ob != null ? SlovoObryvov(ob[0], ob[1]) : null;
+        sostC = okV is bool && !(bool)okV ? "kras" : so != null ? "zhelt" : okV is bool ? "ok" : "sery";
+        string t = "Claude" + (srv != "" ? " · " + srv : "");
+        var z = new Panel { Name = "claude-znachok", Size = new Size(26 + TextW(t, F_TEKST) + 4, 26), AccessibleDescription = sostC, Cursor = Cursors.Hand, Margin = Padding.Empty };
+        var zn = new ZnakSost { Sost = sostC, Size = new Size(18, 18), Location = new Point(0, 4), Cursor = Cursors.Hand };
+        var n = new Nadpis { Text = t, Font = F_TEKST, Location = new Point(24, 4), Cursor = Cursors.Hand };
+        z.Controls.Add(zn); z.Controls.Add(n);
+        if (ob != null) pokazanoObryvov["glavnaya:" + srv] = ob[0];
+        string pod = (okV is bool ? ((bool)okV ? "Claude отвечает" : "Claude не отвечает") + (kogda != "" ? " — проверено " + Kogda(kogda) : "") : "Claude ещё не проверяли") + "." +
+                     (so != null ? "\nСервер " + srv + " обрывается — " + Mnozh(ob[0], "раз", "раза", "раз") + " за сутки, без ответа " + ob[1] + " мин." : "") +
+                     (srv != "" ? "\nClaude закреплён за сервером " + srv + ". Нажмите — откроются «Серверы»." : "");
+        foreach (Control x in new Control[] { z, zn, n }) { podskazki.SetToolTip(x, pod); x.Click += (s, e) => Otkryt("servery"); }
+        return z;
+    }
+
+    Panel StrGlavnaya()
+    {
+        var k = Kolonka(); int W = Shir;
+        if (sost == null)
+        {
+            k.Controls.Add(Shapka("Смотрю, как дела у сети", "Спрашиваю сторожа", null, "sery"));
+            return k;
+        }
+        if (Pult.Sboy(sost))
+        {
+            bool netPy = Pult.B(sost, "net_python");
+            k.Controls.Add(Shapka(netPy ? "Сторож не может работать" : "Сторож не отвечает", netPy ? "Без Python он не запускается" : "Окно спрашивает его раз в минуту само", null, "kras"));
+            k.Controls.Add(KartaOshibki(W, netPy ? "Не нашёл Python" : "Не получилось узнать, как дела у сети", Pult.Info(sost), () => { sost = null; Perestroit(); Obnovit(); }));
+            return k;
+        }
+        var s = Svesti();
+        bool karOff = s.KaringIzv && !s.Karing;
+
+        // ---- плитки: VPN, стабильность основного сервера, YouTube и Discord, автопроверка ----
+        var vpn = new Plit { Id = "vpn", Zag = "VPN" };
+        string zm = Pult.S(sost, "zamer");
+        if (!s.KaringIzv) { vpn.Sost = "sery"; vpn.Stroka = "Нет данных о Karing (VPN)"; }
+        else if (!s.Karing)
+        {
+            vpn.Sost = "kras"; vpn.Stroka = KARING_NE;
+            vpn.Podskazka = (s.KaringBeda != "" ? Chel.Tekst(s.KaringBeda) + ".\n" : "") + "Без Karing заблокированные в России сайты не откроются.";
+            vpn.Kn.Add(Kn("Запустить Karing", ZapustitKaring));
+        }
+        else if (s.KaringBeda != "")
+        {
+            vpn.Sost = "zhelt"; vpn.Stroka = KaringStroka(s.KaringBeda); vpn.Podskazka = Chel.Tekst(s.KaringBeda);
+            vpn.Kn.Add(Kn("Открыть Karing", ZapustitKaring));
+        }
+        else if (s.Server == "")
+        {
+            vpn.Sost = "zhelt"; vpn.Stroka = "Сервер не выбран";
+            vpn.Kn.Add(Kn("Выбрать лучший сервер", NaytiLuchshiy));
+            vpn.Podskazka = "Сторож замерит все серверы VPN и подключит самый быстрый. 2–5 минут, интернет пару раз моргнёт.";
         }
         else
         {
-            int xPol = 46 + levW + 12, skW = 84, polW = xPrav - 12 - skW - 8 - xPol;
-            ur = new Uroven { Location = new Point(xPol, y + 24), Size = new Size(Math.Max(16, polW), 7), Visible = polW >= 40 };
-            skor = Np1(cherezKaring ? "…" : bezSkor, xPol + (polW >= 40 ? polW + 8 : 0), y + 17, skW, true, null, false);
+            // скорость — с подписью, откуда она: ночной (или ваш) замер серверов, а не тест скорости
+            vpn.Sost = "ok"; vpn.Stroka = s.Server + (s.SkorMbit > 0 ? " · " + MBsIzMbit(s.SkorMbit) + (zm != "" ? " · замер " + Kogda(zm) : "") : "");
+            vpn.Podskazka = "Сайты и программы идут через сервер " + s.Server + "." + (s.SkorMbit > 0 ? "\nСкорость — по замеру серверов" + (zm != "" ? " " + Kogda(zm) : "") + "." : "");
         }
-        if (!cherezKaring) ur.Visible = false;
-        kar.Controls.Add(ur); kar.Controls.Add(skor);
-        if (cherezKaring) zhivye[exe] = Tuple.Create(skor, ur, kudaN);
-        else podskazki.SetToolTip(skor, vSeti ? "Программа выходит в интернет не через Karing — её скорость отдельно не видна." : "Программа сейчас не в сети.");
 
-        bool claude = exe.Equals("claude.exe", StringComparison.OrdinalIgnoreCase) && Pult.S(sost, "claude") != "" && Pult.S(sost, "claude") != "как всё остальное";
-        if (claude)
+        // стабильность — по ОСНОВНОМУ серверу (обрывы сервера Claude — у его значка); числа — те же, что в «Серверах»
+        var stab = new Plit { Id = "stabil", Zag = "Стабильность" };
+        var obGl = s.Server != "" ? ObryvyServera(s.Server) : null;
+        if (karOff || s.Server == "" || (obGl == null && !s.Proveryal)) { stab.Sost = "sery"; stab.Stroka = "Ещё нет данных"; stab.Podskazka = "Сторож ещё не проверял основной сервер. Обрывы появятся после первых проверок."; }
+        else
         {
-            var z = new Kartochka { Location = new Point(xPrav, yPrav), Size = new Size(300, 32), Ottenok = Ris.Smes(pal.Poverhnost, pal.Akcent, 0.18) };
-            z.Controls.Add(Np1("всегда через «" + Pult.Chisto(Pult.S(sost, "claude")) + "»", 12, 6, 276, false));
-            kar.Controls.Add(z);
-            return rowH;
+            int obr = obGl != null ? obGl[0] : 0, min = obGl != null ? obGl[1] : 0;
+            pokazanoObryvov["glavnaya:" + s.Server] = obr;
+            stab.Sost = SlovoObryvov(obr, min) != null ? "zhelt" : "ok";
+            stab.Stroka = "Основной сервер — " + (obr == 0 ? "без обрывов" : Mnozh(obr, "обрыв", "обрыва", "обрывов")) + " за сутки";
+            stab.Podskazka = "Сервер " + s.Server + " за последние сутки обрывался " + Mnozh(obr, "раз", "раза", "раз") + ", без ответа " + min + " мин.\nКак обрывались остальные серверы — в разделе «Серверы».";
+            if (obr >= 10) stab.Kn.Add(Kn("Выбрать лучший сервер", NaytiLuchshiy));
         }
-        if (vSeti && !cherezKaring && !pravilo)
+
+        var golos = Pult.D(Pult.G(sost, "golos"));
+        bool golosEst = Pult.B(golos, "est");
+        double poteri = Pult.Ch(Pult.G(golos, "poteri"));
+        string ytSboy = Pult.G(sost, "youtube_sboy") as string ?? "";
+        bool golosBeda = false;
+        var yt = new Plit { Id = "youtube", Zag = "YouTube и Discord" };
+        if (s.ZapRab)
         {
-            var z = new Kartochka { Location = new Point(xPrav, yPrav), Size = new Size(300, 32) };
-            z.Controls.Add(Np1(KaringVyklyuchen() ? "Karing выключен — выбор не действует" : "идёт не через Karing — выбор не подействует", 12, 6, 276));
-            kar.Controls.Add(z);
-            return rowH;
+            if (ytSboy.Trim() != "" || (golosEst && poteri >= 8))
+            {
+                bool ytBeda = ytSboy.Trim() != "";
+                golosBeda = !ytBeda;
+                yt.Sost = "zhelt"; yt.Stroka = ytBeda ? "YouTube напрямую не открывался" : "Голос Discord прерывается";
+                yt.Podskazka = (ytBeda ? "Сторож проверял YouTube без VPN " + Kogda(ytSboy) + " — не открылся." : "За последние 2 минуты теряется " + poteri.ToString("0.#") + " % голоса.") +
+                               "\nСторож подберёт настройку обхода zapret, при которой всё работает. Около 10 минут.";
+                yt.Kn.Add(Kn("Подобрать настройку", PodobratZapret));
+            }
+            else
+            {
+                yt.Sost = "ok"; yt.Stroka = "zapret работает";
+                yt.Podskazka = "Программа zapret открывает YouTube и голос Discord без VPN. Сторож проверяет YouTube раз в час — сбоев не было." +
+                               (golosEst ? "\nГолос в Discord идёт чисто." : "");
+            }
         }
-        // выбор есть и у правил программ, которых сейчас нет в сети или которые идут мимо Karing: их правило можно сменить и убрать
-        string m = izmeneniya.ContainsKey(exe) ? izmeneniya[exe] : Pult.S(p, "marshrut");
-        if (m == "") m = "avto";
-        var seg = new Segmenty { Punkty = new[] { "Авто", m != "avto" && m != "vpn" && m != "direct" && m != "block" ? "VPN: " + Pult.Chisto(m) : "VPN", "Напрямую", "Без сети" },
-            Location = new Point(xPrav, yPrav), Size = new Size(300, 32) };
-        seg.Vybran = m == "avto" ? 0 : m == "direct" ? 2 : m == "block" ? 3 : 1;
-        string tek = m;
-        seg.Smena += i => { izmeneniya[exe] = i == 0 ? "avto" : i == 1 ? (tek != "avto" && tek != "direct" && tek != "block" ? tek : "vpn") : i == 2 ? "direct" : "block"; ZaplanirovatMarshruty(); };
-        kar.Controls.Add(seg);
-        if (pravilo)
+        else if (s.ZapNeNuzhen) { yt.Sost = "sery"; yt.Stroka = "Не нужно: идут через VPN"; yt.Podskazka = "Вы отметили, что zapret не нужен. Установить его можно в разделе «YouTube и Discord»."; }
+        else if (s.ZapEst)
         {
-            var ub = Kn("Убрать", () => { izmeneniya[exe] = "ubrat"; ZaplanirovatMarshruty(); Perestroit(); }, false, 96);
-            ub.Height = 32; ub.Location = new Point(xPrav + 304, yPrav); ub.Margin = Padding.Empty;
-            kar.Controls.Add(ub);
+            yt.Sost = "zhelt"; yt.Stroka = "zapret не работает";
+            yt.Podskazka = "Сторож переберёт настройки обхода в zapret и поставит самую надёжную. Около 10 минут — всё это время YouTube и Discord без VPN рвутся.";
+            yt.Kn.Add(Kn("Подобрать настройку", PodobratZapret));
         }
-        return rowH;
+        else
+        {
+            yt.Sost = "sery"; yt.Stroka = "zapret не установлен";
+            yt.Podskazka = "zapret открывает YouTube и голос Discord без VPN. Это не обязательно: без него они идут через VPN.";
+            yt.Kn.Add(Kn("Установить zapret", UstanovitZapret));
+            yt.Kn.Add(Kn("Не нужно", ZapretNeNuzhen));
+            podskazki.SetToolTip(yt.Kn[0], "Сторож скачает zapret с GitHub (около 4 МБ) и включит его. Windows спросит разрешение.");
+            podskazki.SetToolTip(yt.Kn[1], "Больше не напоминать: YouTube и голос Discord будут идти через VPN.");
+        }
+
+        var avto = new Plit { Id = "avto", Zag = "Автопроверка" };
+        if (s.Zadaniya)
+        {
+            avto.Sost = "ok"; avto.Stroka = "Каждые 10 мин" + (s.Proveryal ? " · последняя " + Kogda(s.Posledniy) : "");
+            avto.Podskazka = "Сторож сам проверяет сеть каждые 10 минут и чинит, что сломано, даже когда окно закрыто.";
+        }
+        else
+        {
+            avto.Sost = "zhelt"; avto.Stroka = "Выключена — проверяет, только пока окно открыто";
+            avto.Podskazka = "Сторож будет сам проверять сеть каждые 10 минут, даже когда окно закрыто. Прав администратора не нужно.";
+            avto.Kn.Add(Kn("Включить", VklyuchitZadaniya));
+        }
+        var plitki = new List<Plit> { vpn, stab, yt, avto };
+
+        // Claude — значком в уголке шапки, только если сторож за ним следит; в «Требует внимания» не попадает: с ним нечего делать
+        var cz = Pult.D(Pult.G(sost, "claude_znachok"));
+        string sostC = null;
+        Panel znCl = Pult.B(cz, "pokazat") ? ZnachokClaude(cz, out sostC) : null;
+
+        // общая фраза — по плиткам: «Всё работает» рядом с жёлтой или красной плиткой не бывает
+        string obshch, fraza;
+        bool estZhelt = plitki.Any(p => p.Sost == "zhelt" || p.Sost == "kras") || s.Pending.Count > 0;
+        if (!s.KaringIzv) { obshch = "sery"; fraza = "Нет данных о VPN"; }
+        else if (!s.Karing) { obshch = "kras"; fraza = "VPN выключен — заблокированные сайты не откроются"; }
+        else if (estZhelt) { obshch = "zhelt"; fraza = stab.Sost == "zhelt" ? "Работает, но есть перебои" : "Работает, но есть что поправить"; }
+        else { obshch = "ok"; fraza = "Всё работает"; }
+        // подпись — что требует внимания (время проверки — в плитке «Автопроверка», не повторяем)
+        var imenaPlitok = new Dictionary<string, string> { { "vpn", "VPN" }, { "stabil", "стабильность" }, { "youtube", golosBeda ? "голос Discord" : "YouTube" }, { "avto", "автопроверка" } };
+        var vnim = plitki.Where(p => (p.Sost == "zhelt" || p.Sost == "kras") && !(karOff && p.Id == "vpn")).Select(p => imenaPlitok[p.Id]).ToList();
+        if (s.Pending.Count > 0) vnim.Add("сайты");
+        string pod = !s.Proveryal ? "Сторож ещё не проверял сеть" : vnim.Count == 0 ? (karOff ? "" : "Ничего делать не нужно") : "Требует внимания: " + string.Join(", ", vnim);
+        var proverit = KnZ("Проверить и починить", Zn.Obnovit, () => Deystvie("Проверка сети", new[] { "proverka" }, null));
+        podskazki.SetToolTip(proverit, "Сторож сразу проверит VPN, сайты и программы и починит, что сломано.\nЕсли чинить нужно — Karing перезапустится, интернет моргнёт на пару секунд.");
+        k.Controls.Add(Shapka(fraza, pod, proverit, obshch, znCl));
+
+        // одна главная кнопка: самое нужное сейчас (VPN → автопроверка → zapret → стабильность → сайты); при «всё работает» — ни одной
+        var sovety = new List<Tuple<string, string, Knopa>>();
+        foreach (var b in s.Pending)
+        {
+            string sayty = b.Substring(b.IndexOf(':') + 1); int i = sayty.IndexOf(" — ", StringComparison.Ordinal); if (i > 0) sayty = sayty.Substring(0, i);
+            var kn = Kn("Пустить через VPN", () => Deystvie("Проверка сети и правка", new[] { "proverka" }, null));
+            sovety.Add(Tuple.Create("Не открываются напрямую: " + sayty.Trim(), "Сторож пустит эти сайты через VPN. Karing перезапустится, интернет моргнёт на пару секунд", kn));
+        }
+        foreach (var b in s.Prochee)
+        {
+            string t = Chel.Tekst(b); int i = t.IndexOf(" — ", StringComparison.Ordinal);
+            sovety.Add(Tuple.Create(i > 0 ? t.Substring(0, i) : t, i > 0 ? Chel.Pervaya(t.Substring(i + 3)) : "", (Knopa)null));
+        }
+        if (obshch != "ok")
+        {
+            var glavn = new[] { vpn.Kn.FirstOrDefault(), avto.Kn.FirstOrDefault(), yt.Sost == "zhelt" ? yt.Kn.FirstOrDefault() : null, stab.Kn.FirstOrDefault() }
+                        .Concat(sovety.Select(x => x.Item3)).FirstOrDefault(x => x != null);
+            if (glavn != null) glavn.Glavnaya = true;
+        }
+        k.Controls.Add(RyadPlitok(W, plitki, "plitki"));
+
+        if (s.Igra.Count > 0)
+        {
+            int zv = Pult.Cel(Pult.G(Pult.D(Pult.G(sost, "nastroyki")), "zvonok_min"));
+            bool igraEst = s.Igra.Any(x => !x.Contains("звонок")), zvonok = s.Igra.Any(x => x.Contains("звонок"));
+            var ig = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, PROM), Name = "karta-igra" };
+            ig.Controls.Add(Zk(Zn.Igra, OTS, 15, 12f));
+            string t = "Сейчас " + (igraEst && zvonok ? "идут игра и звонок в Discord" : igraEst ? "идёт игра" : "идёт звонок в Discord") +
+                       ". Сторож не перезапускает Karing (VPN), чтобы не оборвать" + (zvonok && zv > 0 ? " — звонок ждёт не дольше " + zv + " мин" : "");
+            ig.Controls.Add(Abz(t, OTS + 30, 14, W - 2 * OTS - 30));
+            ig.Height = 14 + VysTeksta(t, W - 2 * OTS - 30) + 14;
+            k.Controls.Add(ig);
+        }
+
+        if (sovety.Count > 0)
+        {
+            int y;
+            var ks = Karta(W, "Что ещё поправить", null, out y, "karta-sovety");
+            foreach (var sv in sovety) y = StrokaDeystviya(ks, W, y, sv.Item1, sv.Item2, null, sv.Item3);
+            ks.Height = y;
+            k.Controls.Add(ks);
+        }
+
+        // обрывы связи за сутки (VPN не отвечал вовсе — на любом сервере, в том числе у Claude): сколько, сколько всего, по часам.
+        // Число на плитке «Стабильность» — про основной сервер, здесь — про связь целиком: одно число дважды не повторяется.
+        // Данных нет — одна строка вместо пустой шкалы («нет данных» уже сказано на плитке).
+        {
+            int y;
+            bool netDannyh = !s.Proveryal && s.Obryvy == 0;
+            if (netDannyh)
+            {
+                var ko0 = Karta(W, "Обрывы связи за сутки", "Шкала по часам появится после первой проверки сети", out y, "karta-obryvov");
+                ko0.Height = y;
+                k.Controls.Add(ko0);
+            }
+            else
+            {
+                string podO = s.Obryvy == 0 ? "Связь через VPN не пропадала" :
+                              "Связь через VPN пропадала " + Mnozh(s.Obryvy, "раз", "раза", "раз") + " · всего " + VremyaKr(s.BezVpn) + " · самый долгий раз — " + VremyaKr(s.Dolgiy);
+                var ko = Karta(W, "Обрывы связи за сутки", podO, out y, "karta-obryvov", LEGENDA);
+                var ps = new PolosaSutok { Location = new Point(OTS, y), Size = new Size(W - 2 * OTS, 52) };
+                var chasy = Pult.L(Pult.D(Pult.G(sost, "stat")), "chasy").ToList();
+                int summa = 0;
+                for (int h = 0; h < 24 && h < chasy.Count; h++) { var c = Spisok(chasy[h]); ps.Obryvy[h] = Pult.Cel(Pult.El(c, 0)); ps.Sekund[h] = Pult.Cel(Pult.El(c, 1)); summa += ps.Obryvy[h]; }
+                pokazanoObryvov["svyaz:chislo"] = s.Obryvy; pokazanoObryvov["svyaz:chasy"] = summa;
+                ko.Controls.Add(ps);
+                ko.Height = y + 52 + OTS - 4;
+                k.Controls.Add(ko);
+            }
+        }
+
+        // сеть сейчас и тест скорости — две карточки рядом (узкое окно — одна под другой)
+        {
+            bool ryadom = W >= 900;
+            int cw = ryadom ? (W - PROM) / 2 : W;
+            var dva = new Panel { Width = W, Margin = new Padding(0, 0, 0, PROM), Name = "ryad-seti" };
+            var ks = KartaSeti(cw, karOff); var kt = KartaTesta(cw, s, karOff);
+            ks.Margin = kt.Margin = Padding.Empty;
+            if (ryadom) { int h = Math.Max(ks.Height, kt.Height); ks.Height = kt.Height = h; ks.Location = new Point(0, 0); kt.Location = new Point(cw + PROM, 0); dva.Height = h; }
+            else { ks.Location = new Point(0, 0); kt.Location = new Point(0, ks.Height + PROM); dva.Height = ks.Height + PROM + kt.Height; }
+            dva.Controls.Add(ks); dva.Controls.Add(kt);
+            k.Controls.Add(dva);
+        }
+        PokazatSet();
+        PokazatSkorosti();
+        return k;
     }
 
-    void ZagruzitProgrammy()
+    void ZapretNeNuzhen()
     {
-        if (progIdet) return;
-        progIdet = true;
-        ThreadPool.QueueUserWorkItem(_ => { var d = Pult.Vyzov("programmy"); try { BeginInvoke((Action)(() => { progIdet = false; progData = d; if (tekushchaya == "programmy" || tekushchaya == "glavnaya") Perestroit(); ObnovitSkorosti(); })); } catch { progIdet = false; } });
+        var nas = Pult.G(sost, "nastroyki") as Dictionary<string, object>;
+        if (nas != null) nas["zapret_ne_nuzhen"] = true;   // сразу, не дожидаясь сторожа
+        foreach (var p in Pult.Slovari(sost, "nastroyka")) if (Pult.S(p, "id") == "zapret") p["gotovo"] = true;
+        Perestroit();
+        Sohranit("zapret_ne_nuzhen", true);
+    }
+
+    Kartochka KartaSeti(int cw, bool karOff)
+    {
+        int y;
+        var kar = Karta(cw, "Сеть сейчас", "Весь компьютер, обновляется каждые 5 с", out y, "karta-seti");
+        int x = OTS;
+        foreach (var c in new[] { Tuple.Create(Zn.Vniz, "Загрузка"), Tuple.Create(Zn.Vverh, "Отдача") })
+        {
+            kar.Controls.Add(Zk(c.Item1, x, y + 1, 10f));
+            kar.Controls.Add(Abz(c.Item2, x + 20, y, 140, "vt"));
+            var ch = new Chislo { Location = new Point(x, y + 24), Size = new Size(170, 34), Znach = "…" };
+            kar.Controls.Add(ch);
+            if (c.Item2 == "Загрузка") setVniz = ch; else setVverh = ch;
+            x += 190;
+        }
+        y += 24 + 34 + 10;
+        setTop = null;
+        if (!karOff)
+        {
+            setTop = ImyaN("", OTS, y, cw - 2 * OTS, "vt");
+            kar.Controls.Add(setTop);
+            y += F_TEKST.Height + 4;
+        }
+        kar.Height = y + OTS;
+        return kar;
+    }
+
+    const string TEST_PODSK = "Сторож скачает 25 МБ через VPN и 25 МБ напрямую и покажет обе скорости.\nЗаймёт около 30 секунд, интернет не рвётся.";
+    const double TEST_SHKALA = 400;   // общая шкала полос теста: 0–50 МБ/с (400 Мбит/с), одна для обеих строк
+
+    // время теста «18.11 23:13» или «18.11.2026 23:13» → когда; null — не понять
+    static DateTime? VremyaTesta(string t)
+    {
+        DateTime d;
+        if (DateTime.TryParseExact(t ?? "", "dd.MM.yyyy HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out d)) return d;
+        if (DateTime.TryParseExact(t ?? "", "dd.MM HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out d)) return d > DateTime.Now.AddDays(1) ? d.AddYears(-1) : d;
+        return null;
+    }
+
+    Kartochka KartaTesta(int cw, Svodka s, bool karOff)
+    {
+        int y;
+        // результат: тест, запущенный в окне, или последний из истории сторожа
+        double mv = 0, mp = 0; string pingV = "", srv = "", kogdaSyr = ""; bool est = false, sboy = false; string info = "";
+        if (testData != null && Pult.Sboy(testData)) { est = true; sboy = true; info = Pult.Info(testData); kogdaSyr = DateTime.Now.ToString("dd.MM.yyyy HH:mm"); }
+        else if (testData != null)
+        {
+            est = true;
+            var v = Pult.D(Pult.G(testData, "vpn")); var pr = Pult.D(Pult.G(testData, "pryamo"));
+            mv = Pult.Ch(Pult.G(v, "mbit")); mp = Pult.Ch(Pult.G(pr, "mbit")); pingV = Pult.S(v, "ping");
+            srv = Pult.Chisto(Pult.S(testData, "server")).Trim();
+            kogdaSyr = Pult.S(testData, "kogda") != "" ? Pult.S(testData, "kogda") : testKogdaSyr;
+        }
+        else
+        {
+            var tp = Pult.G(sost, "test_poslednii") as Dictionary<string, object>;
+            if (tp != null)
+            {
+                est = true; mv = Pult.Ch(Pult.G(tp, "vpn")); mp = Pult.Ch(Pult.G(tp, "pryamo"));
+                srv = Pult.Chisto(Pult.S(tp, "server")).Trim(); kogdaSyr = Pult.S(tp, "kogda");
+            }
+        }
+        var kogdaD = VremyaTesta(kogdaSyr);
+        bool ustarel = kogdaD != null && (DateTime.Now - kogdaD.Value).TotalHours > 24;
+        string pod = !est ? "Тест ещё не запускали" : "Последний тест " + (kogdaD != null ? Kogda(kogdaD.Value.ToString("dd.MM.yyyy HH:mm")) : "— время не записано") + (ustarel ? " · устарел" : "");
+        var kar = Karta(cw, "Тест скорости", pod, out y, "karta-testa", null, KN_W + 20);
+        var kt = KnZ(testIdet ? "Идёт тест" : "Запустить тест", Zn.Skorost, () =>
+        {
+            if (testIdet) return;
+            testIdet = true;
+            if (!Deystvie("Тест скорости", new[] { "test-seti" }, d => { testIdet = false; testData = d; testKogdaSyr = DateTime.Now.ToString("dd.MM.yyyy HH:mm"); })) testIdet = false;
+        });
+        // без Karing через VPN мерить нечего — кнопка неактивна, почему — в подсказке (про Karing уже сказано вверху экрана)
+        kt.Enabled = !testIdet && !karOff;
+        kt.Location = new Point(cw - OTS - KN_W, OTS - 2); kt.Margin = Padding.Empty;
+        podskazki.SetToolTip(kt, karOff ? "Тест заработает, когда Karing (VPN) будет запущен." : TEST_PODSK);
+        kar.Controls.Add(kt);
+        y = Math.Max(y, OTS - 2 + KN_H + 12);
+        int tw = cw - 2 * OTS;
+        if (!est) { kar.Height = y + 4; return kar; }
+        if (sboy)
+        {
+            string t = "Тест не прошёл: " + (Syroe(info) ? "сторож ответил ошибкой" : Chel.Tekst(info).ToLowerInvariant());
+            kar.Controls.Add(Abz(t, OTS, y, tw, "vt")); kar.Height = y + VysTeksta(t, tw) + OTS;
+            return kar;
+        }
+        int podpW = Math.Min(190, tw / 3), znW = 96, xPol = OTS + podpW + 8, polW = Math.Max(30, cw - OTS - znW - 8 - xPol);
+        foreach (var t in new[] { Tuple.Create("Через VPN", srv, mv, pingV), Tuple.Create("Напрямую", "", mp, "") })
+        {
+            kar.Controls.Add(ImyaN(t.Item1 + (t.Item2 != "" ? " (" + t.Item2 + ")" : ""), OTS, y, podpW));
+            // полосы — нейтральные (синий — только у главной кнопки) и по общей шкале 0–50 МБ/с
+            var ur = new Uroven { Location = new Point(xPol, y + 8), Size = new Size(polW, 8), Dolya = Math.Min(1, t.Item3 / TEST_SHKALA), Neytralnaya = true, Name = "polosa-testa" };
+            podskazki.SetToolTip(ur, "Шкала — от 0 до 50 МБ/с, одна для обеих строк.");
+            kar.Controls.Add(ur);
+            var zn = Stolb(t.Item3 > 0 ? MBsIzMbit(t.Item3) : "—", cw - OTS - znW, y - 1, znW, true, ustarel ? "vt" : null);
+            podskazki.SetToolTip(zn, t.Item3 > 0 ? (t.Item4 != "" ? "Отклик " + t.Item4 + " мс: через сколько сервер отвечает. Меньше — лучше." : MBsIzMbit(t.Item3))
+                                                 : karOff ? "Через VPN не проверялось: " + KARING_NE + "." : "Через VPN тест не прошёл: сервер не отвечал.");
+            kar.Controls.Add(zn);
+            y += 28;
+        }
+        // вывод — только когда есть что сравнить (про выключенный Karing уже сказано вверху экрана)
+        string vv = ustarel ? "Тест старше суток — запустите заново, чтобы узнать скорость сейчас" :
+                    mv > 0 && mp > 0 ? (mv >= 50 && mp >= 50 ? "И через VPN, и напрямую быстро" : mv < 50 && mp >= 50 ? "VPN медленнее 6 МБ/с — стоит выбрать лучший сервер" :
+                    mp < 50 && mv >= 50 ? "Напрямую медленно — похоже, тормозит провайдер или zapret" : "Медленно везде — похоже на провайдера или Wi-Fi")
+                  : mv <= 0 && !karOff ? "Через VPN тест не прошёл: сервер не отвечал" : "";
+        if (vv != "") { kar.Controls.Add(Abz(vv, OTS, y + 4, tw, "vt")); y += 4 + VysTeksta(vv, tw); }
+        kar.Height = y + OTS;
+        return kar;
     }
 
     // ---------- Программы ----------
     Dictionary<string, object> progData;
     readonly Dictionary<string, string> izmeneniya = new Dictionary<string, string>();
     System.Windows.Forms.Timer marshrutTaymer;
+    bool progIdet;
+
+    void ZagruzitProgrammy()
+    {
+        if (progIdet) return;
+        progIdet = true;
+        ThreadPool.QueueUserWorkItem(_ => { var d = Pult.Vyzov("programmy"); try { BeginInvoke((Action)(() => { progIdet = false; progData = d; if (tekushchaya == "programmy") Perestroit(); ObnovitSkorosti(); })); } catch { progIdet = false; } });
+    }
+
+    const string KAK_IDET = "Авто — заблокированное в России идёт через VPN, остальное напрямую.\nVPN — всё через VPN. Напрямую — всё без VPN. Без сети — программа не выйдет в интернет.\n" +
+                            "Выбор применяется сам через пару секунд: Karing перезапустится, интернет моргнёт один раз.";
+
+    class KolProg { public int Imya, ImyaW, Skor, SkorW, Vybor, VyborW; public bool Dve; }
+    static string[] PunktyVybora(string m)
+    {
+        return new[] { "Авто", m != "" && m != "avto" && m != "ubrat" && m != "vpn" && m != "direct" && m != "block" ? "VPN: " + Pult.Chisto(m) : "VPN", "Напрямую", "Без сети" };
+    }
+
+    KolProg KolonkiProgramm(int W, IEnumerable<string> marshruty)
+    {
+        int vybW = Math.Max(300, marshruty.Select(m => Segmenty.Nuzhno(PunktyVybora(m))).DefaultIfEmpty(0).Max());
+        // столбцы — вплотную: имя (до 380 px), сразу за ним скорость, за ней выбор; пустое место — справа, а не между столбцами
+        if (W >= 860) { int imW = Math.Min(380, W - 46 - 16 - 100 - 28 - vybW - OTS), xS = 46 + imW + 16, xV = xS + 100 + 28; return new KolProg { Imya = 46, ImyaW = imW, Skor = xS, SkorW = 100, Vybor = xV, VyborW = vybW }; }
+        return new KolProg { Imya = 46, ImyaW = W - 46 - OTS - 110, Skor = W - OTS - 100, SkorW = 100, Vybor = 46, VyborW = Math.Min(vybW, W - 46 - OTS), Dve = true };
+    }
+
+    // строка заголовков столбцов (только широкое окно)
+    int ShapkaStolbcov(Kartochka kar, KolProg kl, int y)
+    {
+        if (kl.Dve) return y;
+        kar.Controls.Add(Abz("Программа", kl.Imya, y, 140, "vt", F_MELK));
+        kar.Controls.Add(Stolb("Скорость", kl.Skor, y - 2, kl.SkorW, true, "vt", F_MELK));
+        kar.Controls.Add(Abz("Как идёт", kl.Vybor, y, 120, "vt", F_MELK));
+        kar.Controls.Add(Vopros(KAK_IDET, kl.Vybor + TextW("Как идёт", F_MELK) + 2, y));
+        return y + 26;
+    }
 
     Panel StrProgrammy()
     {
         var k = Kolonka(); int W = Shir;
-        var dob = KnZ("Добавить по имени", "", DobavitProgrammu, false, 200);
+        var dob = KnZ("Добавить программу", Zn.Dobavit, DobavitProgrammu);
         podskazki.SetToolTip(dob, "Программы нет в списке, потому что она сейчас не в сети? Впишите её имя — и выберите, как ей ходить.");
-        k.Controls.Add(Shapka("Программы", "", dob));
-        if (progData == null)
-        {
-            k.Controls.Add(Tx("Смотрю, какие программы в сети…", true));
-            ZagruzitProgrammy();
-            return k;
-        }
+        k.Controls.Add(Shapka("Программы", "Как каждая программа выходит в интернет", dob));
+        if (progData == null) { k.Controls.Add(KartaZagruzki(W, "Смотрю, какие программы в сети")); ZagruzitProgrammy(); return k; }
         if (Pult.Sboy(progData))
         {
-            k.Controls.Add(KartaOshibki(W, "Не смог узнать программы", Pult.Info(progData), () => { progData = null; Perestroit(); }));
+            k.Controls.Add(KartaOshibki(W, "Не получилось узнать программы", Pult.Info(progData), () => { progData = null; Perestroit(); }));
             return k;
         }
-        var vse = Pult.Slovari(progData, "programmy").Where(p => Pult.S(p, "exe") != "").ToList();
+        bool karOff = KaringVyklyuchen();
+        if (karOff) k.Controls.Add(PolosaBedy(W, "kras", KARING_NE, "Выбор для программ заработает, когда Karing будет запущен", Kn("Запустить Karing", ZapustitKaring, true)));
+        var vse = Pult.Slovari(progData, "programmy").Where(p => Pult.S(p, "exe") != "" && !Sluzhebnaya(Pult.S(p, "exe"))).ToList();
         Func<Dictionary<string, object>, string> ex = p => Pult.S(p, "exe");
         var pravila = vse.Where(p => (Pult.B(p, "pravilo") || izmeneniya.ContainsKey(ex(p))) && !(izmeneniya.ContainsKey(ex(p)) && izmeneniya[ex(p)] == "ubrat")).ToList();
         var ostalnye = vse.Where(p => !pravila.Contains(p) && Pult.B(p, "v_seti")).ToList();
+        var kl = KolonkiProgramm(W, vse.Select(p => izmeneniya.ContainsKey(ex(p)) ? izmeneniya[ex(p)] : Pult.S(p, "marshrut")));
 
-        var kp = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, 12) };
-        kp.Controls.Add(Zg("Ваши правила", 16, 12));
-        kp.Controls.Add(Np1("эти программы идут так, как вы выбрали. «Убрать» — снова решает сторож.", 128, 15, W - 144));
-        int y = 44;
-        if (pravila.Count == 0) { kp.Controls.Add(Np("Правил пока нет. Выберите способ у программы ниже — она переедет сюда.", 16, 48, true, W - 32)); y = 80; }
-        foreach (var p in pravila) y += StrokaProgrammy(kp, p, W, y, true, true);
-        kp.Height = y + 12;
-        k.Controls.Add(kp);
+        int y;
+        Kartochka kp = null;
+        if (pravila.Count > 0)
+        {
+            kp = Karta(W, "Ваши правила", "Эти программы идут так, как вы выбрали. «Авто» — снова решает сторож", out y, "karta-pravila");
+            y = ShapkaStolbcov(kp, kl, y);
+            foreach (var p in pravila) y += StrokaProgrammy(kp, p, kl, y, karOff);
+            kp.Height = y + 8;
+            k.Controls.Add(kp);
+        }
 
-        var ko = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, 12) };
-        ko.Controls.Add(Zg("Сейчас в сети", 16, 12));
-        ko.Controls.Add(Np1("все программы, которые сейчас пользуются интернетом", 130, 15, W - 146));
-        y = 44;
-        foreach (var p in ostalnye) y += StrokaProgrammy(ko, p, W, y, true);
-        if (ostalnye.Count == 0) { ko.Controls.Add(Np("Других программ в сети сейчас нет.", 16, 48, true)); y = 80; }
+        var ko = Karta(W, "Сейчас в сети", "Программы, которые сейчас пользуются интернетом", out y, "karta-v-seti");
+        if (ostalnye.Count == 0) { string t = "Других программ в сети сейчас нет"; ko.Controls.Add(Abz(t, OTS, y, W - 2 * OTS, "vt")); y += VysTeksta(t, W - 2 * OTS) + 6; }
+        else { y = ShapkaStolbcov(ko, kl, y); foreach (var p in ostalnye) y += StrokaProgrammy(ko, p, kl, y, karOff); }
         ko.Height = y + 8;
         k.Controls.Add(ko);
-        k.Controls.Add(Tx("Авто — заблокированное в России идёт через VPN, остальное напрямую. «Без сети» — программа не выйдет в интернет. «Мимо Karing» — программа (часто игры и загрузки Steam) выходит в интернет сама, в обход Karing, и выбор на неё не подействует. Выбор применяется сам через пару секунд: Karing перезапустится, интернет моргнёт один раз.", true));
+
+        // своих правил нет — одной строкой внизу, а не пустой карточкой сверху
+        if (pravila.Count == 0)
+        {
+            var pusto = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, PROM), Name = "karta-pravila" };
+            string t = "Своих правил пока нет: выберите способ у любой программы — она станет правилом";
+            pusto.Controls.Add(Zk(Zn.Info, OTS, 15, 11f));
+            pusto.Controls.Add(Abz(t, OTS + 28, 14, W - 2 * OTS - 28, "vt"));
+            pusto.Height = 14 + VysTeksta(t, W - 2 * OTS - 28) + 14;
+            k.Controls.Add(pusto);
+        }
         PokazatSkorosti();
         return k;
+    }
+
+    // Одна строка программы (столбцы одни и те же в обеих карточках); возвращает её высоту.
+    int StrokaProgrammy(Kartochka kar, Dictionary<string, object> p, KolProg kl, int y, bool karOff)
+    {
+        string exe = Pult.S(p, "exe");
+        bool cherezKaring = Pult.B(p, "karing"), vSeti = Pult.B(p, "v_seti");
+        int rowH = kl.Dve ? 92 : 54;
+        kar.Controls.Add(ZnachokProgrammy(exe, OTS, y + 16));
+        kar.Controls.Add(ImyaN(Imya(exe), kl.Imya, y + 5, kl.ImyaW, null, null, exe));
+        var kuda = ImyaN(KudaTekstN(Pult.S(p, "seychas")), kl.Imya, y + 27, kl.ImyaW, "vt");
+        kar.Controls.Add(kuda);
+        var skor = Stolb(vSeti || cherezKaring ? "—" : "", kl.Skor, kl.Dve ? y + 5 : y + 15, kl.SkorW, true, "vt");
+        kar.Controls.Add(skor);
+        if (cherezKaring) zhivye[exe] = Tuple.Create(skor, (Uroven)null, (Nadpis)kuda);
+        else if (vSeti) podskazki.SetToolTip(skor, "Программа выходит в интернет не через Karing — её скорость отдельно не видна.");
+        int yV = kl.Dve ? y + 52 : y + 11;
+
+        bool claude = exe.Equals("claude.exe", StringComparison.OrdinalIgnoreCase) && Pult.S(sost, "claude") != "" && Pult.S(sost, "claude") != "как всё остальное";
+        if (claude)
+        {
+            string t = "Всегда через сервер " + Pult.Chisto(Pult.S(sost, "claude"));
+            kar.Controls.Add(Abz(t, kl.Vybor, yV + 6, kl.VyborW, "vt"));
+            return rowH;
+        }
+        if (vSeti && !cherezKaring && !karOff && !Pult.B(p, "pravilo"))
+        {
+            // «мимо Karing» уже сказано под именем — здесь только следствие
+            string t = "Выбор не действует";
+            kar.Controls.Add(Abz(t, kl.Vybor, yV + 6, kl.VyborW - 26, "vt"));
+            kar.Controls.Add(Vopros("Программа (часто игры и загрузки Steam) выходит в интернет сама, в обход Karing, — выбор на неё не подействует.", kl.Vybor + TextW(t, F_TEKST) + 2, yV + 8));
+            return rowH;
+        }
+        // выбор есть и у правил программ, которых сейчас нет в сети: их правило можно сменить («Авто» — убрать)
+        string m = izmeneniya.ContainsKey(exe) ? izmeneniya[exe] : Pult.S(p, "marshrut");
+        if (m == "" || m == "ubrat") m = "avto";
+        var seg = new Segmenty { Punkty = PunktyVybora(m), Location = new Point(kl.Vybor, yV), Size = new Size(kl.VyborW, 32), Enabled = !karOff };
+        seg.Vybran = m == "avto" ? 0 : m == "direct" ? 2 : m == "block" ? 3 : 1;
+        string tek = m;
+        seg.Smena += i => { izmeneniya[exe] = i == 0 ? "avto" : i == 1 ? (tek != "avto" && tek != "direct" && tek != "block" ? tek : "vpn") : i == 2 ? "direct" : "block"; ZaplanirovatMarshruty(); };
+        if (karOff) podskazki.SetToolTip(seg, KARING_NE + " — выбор заработает, когда он будет запущен.");
+        kar.Controls.Add(seg);
+        return rowH;
     }
 
     void DobavitProgrammu()
@@ -738,77 +1176,83 @@ partial class Okno
     Panel StrSayty()
     {
         var k = Kolonka(); int W = Shir;
-        k.Controls.Add(Shapka("Сайты", "", null));
-        string obT = "Заблокированные в России — через VPN (списки обновляются сами), остальные — напрямую. Сайт не открывается или тормозит? Впишите его ниже: сторож проверит, открывается ли он напрямую и через VPN, и подскажет, как лучше.";
-        var obyas = new Kartochka { Width = W, Height = 40 + VysTeksta(obT, W - 70) + 14, Margin = new Padding(0, 0, 0, 12) };
-        obyas.Controls.Add(Zk(Zn.Globus, 16, 16, 13f));
-        obyas.Controls.Add(new Nadpis { Text = "Как идут сайты", Font = new Font("Segoe UI Semibold", 11f), Location = new Point(46, 12) });
-        obyas.Controls.Add(Np(obT, 46, 40, true, W - 70));
-        k.Controls.Add(obyas);
+        k.Controls.Add(Shapka("Сайты", "Заблокированные в России — через VPN, остальные — напрямую. Списки обновляются сами", null));
+        bool karOff = KaringVyklyuchen();
+        // беда про Karing — так же, как на остальных экранах: одна полоса сверху с кнопкой
+        if (karOff) k.Controls.Add(PolosaBedy(W, "kras", KARING_NE, "Сайты, которым нужен VPN, откроются, когда Karing будет запущен", Kn("Запустить Karing", ZapustitKaring, true)));
 
-        var kar = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, 12) };
-        kar.Controls.Add(new Nadpis { Text = "Проверить сайт", Font = new Font("Segoe UI Semibold", 11f), Location = new Point(16, 12) });
-        kar.Controls.Add(Np1("до 25 секунд: открою сайт напрямую и через VPN, ничего не меняю", 150, 15, W - 166));
-        var pole = new TextBox { Name = "pole-sayt", Location = new Point(16, 44), Width = W - 200, Text = saytPole, Font = new Font("Segoe UI", 11f), BorderStyle = BorderStyle.FixedSingle };
-        pole.TextChanged += (s, e) => saytPole = pole.Text;
-        var kn = KnZ(saytIdet ? "Проверяю…" : "Проверить", "", ProveritSayt, true, 160);
-        kn.Location = new Point(W - 176, 41); kn.Margin = Padding.Empty;
-        pole.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; kn.PerformClick(); } };
+        int y;
+        var kar = Karta(W, "Проверить сайт", "Сайт не открывается или тормозит? Сторож откроет его напрямую и через VPN и подскажет, как лучше", out y, "karta-proverki");
+        int poleW = Math.Min(520, W - 2 * OTS - KN_W - 12);
+        var pole = new Pole { Location = new Point(OTS, y), Size = new Size(poleW, KN_H), Primer = "Адрес сайта, например youtube.com", Name = "pole-ramka" };
+        pole.T.Name = "pole-sayt"; pole.T.Text = saytPole; pole.T.Font = F_TEKST;
+        pole.T.TextChanged += (s, e) => saytPole = pole.T.Text;
+        var kn = KnZ(saytIdet ? "Проверяю сайт" : "Проверить сайт", Zn.Poisk, ProveritSayt);
+        kn.Enabled = !saytIdet;
+        kn.Location = new Point(OTS + poleW + 12, y); kn.Margin = Padding.Empty;
+        podskazki.SetToolTip(kn, "До 25 секунд. Сторож ничего не меняет — только проверяет.");
+        pole.T.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; kn.PerformClick(); } };
         kar.Controls.Add(pole); kar.Controls.Add(kn);
-        int y = 92;
+        y += KN_H + 18;
         if (saytProverka != null && Pult.Sboy(saytProverka))
         {
-            string t = "Не смог проверить сайт: " + Pult.Info(saytProverka);
-            kar.Controls.Add(Np(t, 16, y, true, W - 32));
-            y += VysTeksta(t, W - 32) + 12;
+            string t = "Не получилось проверить сайт: " + (Syroe(Pult.Info(saytProverka)) ? "сторож ответил ошибкой" : Chel.Tekst(Pult.Info(saytProverka)).ToLowerInvariant());
+            kar.Controls.Add(Abz(t, OTS, y, W - 2 * OTS, "vt"));
+            y += VysTeksta(t, W - 2 * OTS) + OTS;
         }
         else if (saytProverka != null)
         {
             var dve = new[] { Spisok(Pult.G(saytProverka, "napryamuyu")), Spisok(Pult.G(saytProverka, "vpn")) };
-            int bw = (W - 44) / 2;
-            string srv = Pult.Chisto(Pult.S(saytProverka, "server"));
+            string srv = Pult.Chisto(Pult.S(saytProverka, "server")).Trim();
+            string dom = Pult.S(saytProverka, "domen");
+            bool netNapr = false, okNapr = false;
+            // итог проверки — двумя строками списка (без рамок внутри карточки): путь, значок, словами
             for (int i = 0; i < 2; i++)
             {
                 string oc = Convert.ToString(Pult.El(dve[i], 2) ?? "");
                 if (oc == "") oc = "нет ответа";
-                bool ok = oc == "быстро", plokho = oc == "не открывается" || oc == "очень медленно" || oc == "нет ответа";
-                Color c = ok ? Zel : plokho ? Kras : Zhelt;
-                var blok = new Kartochka { Width = bw, Height = 92, Location = new Point(16 + i * (bw + 12), y), Ottenok = Ris.Smes(pal.Poverhnost, c, pal.Temnaya ? 0.2 : 0.12) };
-                blok.Controls.Add(Np1(i == 0 ? "Напрямую" : "Через VPN" + (srv != "" ? " (" + srv + ")" : ""), 12, 7, bw - 24));
                 double t = Pult.Ch(Pult.El(dve[i], 1));
-                var bol = Np1(oc == "не открывается" || oc == "нет ответа" ? "нет" : t.ToString("0.0") + " с", 10, 29, bw - 20, false, new Font("Segoe UI Semibold", 16f), false);
-                bol.Tag = c;
-                blok.Controls.Add(bol);
-                blok.Controls.Add(Np1(oc, 12, 64, bw - 24));
-                kar.Controls.Add(blok);
+                bool ok = oc == "быстро", ne = oc == "не открывается" || oc == "нет ответа";
+                if (i == 0) { netNapr = ne; okNapr = ok; }
+                string sostR, stroka;
+                if (i == 1 && karOff) { sostR = "sery"; stroka = "Не проверялся"; }
+                else { sostR = ok ? "ok" : ne ? "kras" : "zhelt"; stroka = ok ? "Открывается за " + t.ToString("0.0") + " с" : ne ? "Не открывается" : Chel.Pervaya(oc) + ": " + t.ToString("0.0") + " с"; }
+                kar.Controls.Add(ImyaN(i == 0 ? "Напрямую" : "Через VPN" + (srv != "" ? " (" + srv + ")" : ""), OTS, y + 1, 240));
+                var zn = new ZnakSost { Sost = sostR, Location = new Point(OTS + 250, y + 1), Size = new Size(20, 20) };
+                var st = Abz(stroka, OTS + 278, y + 1, W - OTS * 2 - 278);
+                if (i == 1 && karOff) { podskazki.SetToolTip(zn, KARING_NE + "."); podskazki.SetToolTip(st, KARING_NE + "."); }
+                kar.Controls.Add(zn); kar.Controls.Add(st);
+                y += 30;
             }
-            y += 92 + 12;
-            string dey = Pult.S(saytProverka, "deystvie"), dom = Pult.S(saytProverka, "domen"), sovet = Pult.S(saytProverka, "sovet");
-            string seych = Pult.B(saytProverka, "uzhe_vpn") ? "через VPN" : Pult.B(saytProverka, "uzhe_napr") ? "напрямую" : "как решит сторож (если сайт в списке заблокированных — через VPN)";
-            string tekst = (dom != "" ? dom + " сейчас идёт: " : "Сейчас идёт: ") + seych + "." + (sovet != "" ? "  Совет: " + sovet + "." : "");
-            bool estDey = (dey == "vpn" || dey == "direct") && dom != "";
-            if (estDey) tekst += "  Кнопка ниже: Karing перезапустится, интернет моргнёт на пару секунд.";
-            bool ryadom = estDey && W >= 900;
-            int tw = ryadom ? W - 32 - 350 : W - 32;
-            int th = VysTeksta(tekst, tw);
-            kar.Controls.Add(Np(tekst, 16, y + 6, false, tw));
-            if (estDey)
+            y += 8;
+            string dey = Pult.S(saytProverka, "deystvie"), sovet = Pult.S(saytProverka, "sovet");
+            string seych = Pult.B(saytProverka, "uzhe_vpn") ? "через VPN" : Pult.B(saytProverka, "uzhe_napr") ? "напрямую" : "как решит сторож";
+            string domT = dom != "" ? dom : "Сайт";
+            if (karOff)
             {
-                int ky = ryadom ? y : y + th + 14;
-                var kd = Kn(dey == "vpn" ? "Пустить через VPN" : "Пустить напрямую", () => Deystvie((dey == "vpn" ? "Пускаю через VPN: " : "Пускаю напрямую: ") + dom, new[] { "sayt", dom, dey }, d => { saytyIst = null; saytProverka = null; }), true, 200);
-                var ko = Kn("Оставить", () => { saytProverka = null; Perestroit(); }, false, 110);
-                kd.Location = new Point(ryadom ? W - 336 : 16, ky); ko.Location = new Point(ryadom ? W - 126 : 226, ky);
-                kd.Margin = ko.Margin = Padding.Empty;
-                kar.Controls.Add(kd); kar.Controls.Add(ko);
-                y = ryadom ? y + Math.Max(38, th + 12) : ky + 38;
+                // вывод со смыслом; про Karing и кнопку — уже полоса вверху экрана
+                string zagV = netNapr ? domT + " напрямую не открывается — ему нужен VPN"
+                            : okNapr ? domT + " открывается напрямую — VPN для него не нужен" : domT + " напрямую открывается медленно — через VPN может быть быстрее";
+                y = StrokaDeystviyaF(kar, W, y, zagV, null, null, F_ZHIR);
             }
-            else y += th + 6;
-            y += 12;
+            else
+            {
+                bool estDey = (dey == "vpn" || dey == "direct") && dom != "";
+                Knopa kd = null, ko = null;
+                if (estDey)
+                {
+                    kd = Kn(dey == "vpn" ? "Пустить через VPN" : "Пустить напрямую", () => Deystvie((dey == "vpn" ? "Пускаю через VPN: " : "Пускаю напрямую: ") + dom, new[] { "sayt", dom, dey }, d => { saytyIst = null; saytProverka = null; }), true);
+                    ko = Kn("Оставить как есть", () => { saytProverka = null; Perestroit(); });
+                    podskazki.SetToolTip(kd, "Karing перезапустится — интернет моргнёт на пару секунд.");
+                }
+                y = StrokaDeystviyaF(kar, W, y, domT + " сейчас идёт " + seych, Chel.Pervaya(sovet),
+                    seych == "как решит сторож" ? "Если сайт в списке заблокированных в России — через VPN, иначе напрямую." : null, F_ZHIR, kd, ko);
+            }
         }
-        kar.Height = Math.Max(96, y + 4);
+        kar.Height = y;
         k.Controls.Add(kar);
 
-        // история
+        // история: что сторож поменял сам
         if (saytyIst == null)
         {
             ThreadPool.QueueUserWorkItem(_ => { var d = Pult.Vyzov("sayty-istoriya"); try { BeginInvoke((Action)(() => { saytyIst = d; if (tekushchaya == "sayty") Perestroit(); })); } catch { } });
@@ -816,28 +1260,43 @@ partial class Okno
         }
         if (Pult.Sboy(saytyIst))
         {
-            k.Controls.Add(KartaOshibki(W, "Не смог прочитать, что сторож поменял сам", Pult.Info(saytyIst), () => { saytyIst = null; Perestroit(); }));
+            k.Controls.Add(KartaOshibki(W, "Не получилось узнать, что сторож поменял сам", Pult.Info(saytyIst), () => { saytyIst = null; Perestroit(); }));
             return k;
         }
-        var ist = Pult.Slovari(saytyIst, "sayty").Where(s => Pult.S(s, "domen") != "").Take(12).ToList();
-        var ki = new Kartochka { Width = W, Height = 48 + Math.Max(1, ist.Count) * 42, Margin = new Padding(0, 0, 0, 12) };
-        ki.Controls.Add(Zg("Что сторож поменял сам", 16, 12));
-        ki.Controls.Add(Np1("«Отменить» — сайт снова пойдёт как до правки; интернет моргнёт", 220, 15, W - 236));
-        y = 44;
-        foreach (var s in ist)
+        var ist = Pult.Slovari(saytyIst, "sayty").Where(s => Pult.S(s, "domen") != "").Take(30).ToList();
+        var ki = Karta(W, "Что сторож поменял сам", "Сайты, которые сторож сам пустил другим путём, потому что они не открывались", out y, "karta-istoriya");
+        if (ist.Count == 0) { string t = "Пока сторож ничего не менял"; ki.Controls.Add(Abz(t, OTS, y, W - 2 * OTS, "vt")); y += VysTeksta(t, W - 2 * OTS) + OTS; }
+        else
         {
-            bool vpn = Pult.S(s, "vid") == "vpn";
-            string dom = Pult.S(s, "domen");
-            var pill = new Kartochka { Location = new Point(16, y + 7), Size = new Size(86, 24), Ottenok = Ris.Smes(pal.Poverhnost, vpn ? Zel : Zhelt, 0.25) };
-            pill.Controls.Add(new Nadpis { Text = vpn ? "в VPN" : "напрямую", Location = new Point(10, 3) });
-            ki.Controls.Add(pill);
-            ki.Controls.Add(Np1(dom, 114, y + 10, 176, false));
-            ki.Controls.Add(Np1((vpn ? "пущен через VPN — напрямую не открывался" : "пущен напрямую — через VPN отказывал") + (Pult.S(s, "kogda") != "" ? " · " + Korotko(Pult.S(s, "kogda")) : ""), 300, y + 10, W - 430));
-            var kv = Kn("Отменить", () => { if (Sprosit("Отменить правку для " + dom + "? Сайт снова пойдёт так, как шёл до неё. Karing перезапустится — интернет моргнёт на пару секунд.")) Deystvie("Отмена правки " + dom, new[] { "vernut", dom }, d => saytyIst = null); }, false, 100);
-            kv.Height = 30; kv.Location = new Point(W - 116, y + 4); kv.Margin = Padding.Empty; ki.Controls.Add(kv);
-            y += 42;
+            // столбцы вплотную: сайт — как идёт и почему (одним столбцом) — когда — «Отменить» видна в каждой строке
+            int kogdaW = 96, otmW = 110, domW = Math.Min(260, (W - 2 * OTS) / 3);
+            int kakW = Math.Min(330, W - 2 * OTS - domW - kogdaW - otmW - 48);
+            if (kakW < 150) { domW = Math.Max(120, domW - (150 - kakW)); kakW = Math.Min(330, W - 2 * OTS - domW - kogdaW - otmW - 48); }
+            int xKak = OTS + domW + 16, xKogda = xKak + kakW + 16, xOtm = xKogda + kogdaW + 16;
+            ki.Controls.Add(Abz("Сайт", OTS, y, 120, "vt", F_MELK));
+            ki.Controls.Add(Abz("Как идёт и почему", xKak, y, kakW, "vt", F_MELK));
+            ki.Controls.Add(Stolb("Когда", xKogda, y - 2, kogdaW, false, "vt", F_MELK));
+            y += 24;
+            foreach (var s in ist)
+            {
+                bool vpn = Pult.S(s, "vid") == "vpn";
+                string dom = Pult.S(s, "domen");
+                string prich = vpn ? "напрямую не открывался" : "через VPN не открывался";
+                ki.Controls.Add(ImyaN(dom, OTS, y + 8, domW));
+                var m = Metka(vpn ? "Через VPN" : "Напрямую", null, xKak, y + 6);
+                ki.Controls.Add(m);
+                ki.Controls.Add(ImyaN(prich, xKak + m.Width + 8, y + 8, kakW - m.Width - 8, "vt"));
+                ki.Controls.Add(Stolb(Korotko(Pult.S(s, "kogda")), xKogda, y + 6, kogdaW, false, "vt"));
+                var kv = Kn("Отменить", () => { if (Sprosit("Отменить правку для " + dom + "? Сайт снова пойдёт так, как шёл до неё. Karing перезапустится — интернет моргнёт на пару секунд.")) Deystvie("Отмена правки " + dom, new[] { "vernut", dom }, d => saytyIst = null); }, false, otmW);
+                kv.Legkaya = true; kv.Height = 30; kv.Location = new Point(xOtm, y + 4); kv.Margin = Padding.Empty;
+                kv.Enabled = !karOff;
+                podskazki.SetToolTip(kv, karOff ? "Отменить правку можно, когда Karing (VPN) будет запущен." : "Сайт снова пойдёт как до правки. Karing перезапустится — интернет моргнёт на пару секунд.");
+                ki.Controls.Add(kv);
+                y += 40;
+            }
+            y += 8;
         }
-        if (ist.Count == 0) ki.Controls.Add(Np("Пока сторож ничего не менял.", 16, 46, true));
+        ki.Height = y;
         k.Controls.Add(ki);
         return k;
     }
@@ -846,122 +1305,143 @@ partial class Okno
     Dictionary<string, object> servData;
     bool servIdet;
 
+    // ---------- состояние сервера — из чисел: три состояния, одно слово и один цвет у каждого (правило — в «?» у шапки «Серверов») ----------
+    const string LEGENDA_SERVEROV = "Состояние — по обрывам за последние сутки и последнему замеру:\n" +
+        "Хороший — не больше 2 обрывов за сутки и меньше 5 минут без ответа.\n" +
+        "С перебоями — от 3 обрывов за сутки или от 5 минут без ответа.\n" +
+        "Не работает — почти не отвечает.\n" +
+        "Пометки: «Медленный» — медленнее 6 МБ/с, для фильмов и игр маловато; «Адрес меняется» — во время замера сервер выходил " +
+        "в интернет с разных адресов: сайты видят то одну, то другую страну и могут выкидывать из аккаунтов. Сторож такие сам не выбирает.\n" +
+        "Отклик — через сколько сервер отвечает: быстрый — до 80 мс, средний — до 150 мс, медленный — дольше. Меньше — лучше для игр и звонков.";
+
+    static string SlovoObryvov(int obr, int minut) { return obr >= 3 || minut >= 5 ? "С перебоями" : null; }
+    static string OtklikSlovami(int ping) { return ping < 80 ? "Быстрый отклик" : ping < 150 ? "Средний отклик" : "Медленный отклик"; }
+
+    class MetkaS { public string Slovo, Sost; public List<string> Prichiny = new List<string>(), Pometki = new List<string>(); }
+    static MetkaS MetkaServera(double skMbit, int ping, int adr, int obr, int minut, bool neOtvechaet)
+    {
+        var m = new MetkaS { Slovo = "Хороший", Sost = "ok" };
+        if (neOtvechaet || skMbit < 5) { m.Slovo = "Не работает"; m.Sost = "kras"; m.Prichiny.Add(skMbit < 5 ? "Скорость почти ноль" : "Сейчас не отвечает"); return m; }
+        if (SlovoObryvov(obr, minut) != null) { m.Slovo = "С перебоями"; m.Sost = "zhelt"; m.Prichiny.Add("За сутки обрывался " + Mnozh(obr, "раз", "раза", "раз") + ", без ответа " + minut + " мин"); }
+        if (adr > 1) m.Pometki.Add("Адрес меняется");
+        if (skMbit < 50) { m.Pometki.Add("Медленный"); m.Prichiny.Add("Скорость " + MBsIzMbit(skMbit) + " — для фильмов и игр маловато"); }
+        return m;
+    }
+
     Panel StrServery()
     {
         var k = Kolonka(); int W = Shir;
-        var zamerKn = KnZ("Замерить и выбрать лучший", Zn.Skorost, NaytiLuchshiy, true, 270);
-        if (servData == null)
+        bool karOff = KaringVyklyuchen();
+        if (servData == null || Pult.Sboy(servData))
         {
-            k.Controls.Add(Shapka("Серверы", "", null));
-            k.Controls.Add(Tx("Загружаю…", true));
-            if (!servIdet)
+            k.Controls.Add(Shapka("Серверы", "Через какой сервер VPN идут сайты и программы", null));
+            if (servData == null)
             {
-                servIdet = true;
-                ThreadPool.QueueUserWorkItem(_ => { var d = Pult.Vyzov("servery"); try { BeginInvoke((Action)(() => { servIdet = false; servData = d; if (tekushchaya == "servery") Perestroit(); })); } catch { servIdet = false; } });
+                k.Controls.Add(KartaZagruzki(W, "Загружаю серверы"));
+                if (!servIdet)
+                {
+                    servIdet = true;
+                    ThreadPool.QueueUserWorkItem(_ => { var d = Pult.Vyzov("servery"); try { BeginInvoke((Action)(() => { servIdet = false; servData = d; if (tekushchaya == "servery") Perestroit(); })); } catch { servIdet = false; } });
+                }
             }
-            return k;
-        }
-        if (Pult.Sboy(servData))
-        {
-            k.Controls.Add(Shapka("Серверы", "", null));
-            k.Controls.Add(KartaOshibki(W, "Не смог получить серверы", Pult.Info(servData), () => { servData = null; Perestroit(); }));
+            else k.Controls.Add(KartaOshibki(W, "Не получилось узнать серверы", Pult.Info(servData), () => { servData = null; Perestroit(); }));
             return k;
         }
         var zamer = Pult.D(Pult.G(servData, "zamer"));
         var rez = Spiski(zamer, "results").Where(r => Pult.El(r, 0) is string && (string)r[0] != "").ToList();
         string kogda = Pult.S(zamer, "when");
-        podskazki.SetToolTip(zamerKn, "Замерю скорость всех серверов VPN и поставлю самый быстрый. 2–5 минут, интернет пару раз моргнёт.");
-        k.Controls.Add(Shapka("Серверы", (kogda != "" ? "последний замер " + Korotko(kogda) + " · " : "") + "новый займёт 2–5 мин", zamerKn));
+        var zamerKn = KnZ("Выбрать лучший сервер", Zn.Skorost, NaytiLuchshiy, rez.Count == 0 && !karOff);
+        zamerKn.Enabled = !karOff;
+        podskazki.SetToolTip(zamerKn, karOff ? "Сначала запустите Karing (VPN): без него серверы не замерить." : "Сторож замерит скорость всех серверов VPN и подключит самый быстрый. 2–5 минут, интернет пару раз моргнёт.");
+        string podS = (kogda != "" ? "Последний замер " + Kogda(kogda) : "Замера ещё не было") + (karOff ? "" : " · новый займёт 2–5 минут");
+        k.Controls.Add(Shapka("Серверы", podS, zamerKn, null, null, rez.Count > 0 ? LEGENDA_SERVEROV : null));
+        if (karOff) k.Controls.Add(PolosaBedy(W, "kras", KARING_NE, rez.Count == 0 ? "Серверы вашей подписки появятся, когда Karing заработает" : "Замерить и подключить сервер можно, когда Karing заработает", Kn("Запустить Karing", ZapustitKaring, true)));
         string seychas = Pult.S(servData, "seychas"), claude = Pult.S(servData, "claude");
-        bool claudeZakr = claude != "" && claude != "как всё остальное";
         if (rez.Count == 0)
         {
+            if (karOff) return k;
             var imena = Pult.L(servData, "servery").OfType<string>().Where(x => x != "").Select(Pult.Chisto).ToList();
-            string t = imena.Count > 0
-                ? "Серверы ещё не замерялись. Нажмите «Замерить и выбрать лучший» — сторож проверит каждый и поставит самый быстрый (2–5 минут, интернет пару раз моргнёт). В подписке: " + string.Join(", ", imena) + "."
-                : KaringVyklyuchen() ? "Серверов не видно: Karing выключен. Запустите Karing — и здесь появятся серверы вашей подписки."
-                : "Серверов пока не видно. Проверьте, что в Karing добавлена подписка VPN, и нажмите «Замерить и выбрать лучший».";
-            var kar = new Kartochka { Width = W, Height = 34 + VysTeksta(t, W - 70), Margin = new Padding(0, 0, 0, 12) };
-            kar.Controls.Add(Zk(Zn.Server, 16, 16, 13f));
-            kar.Controls.Add(Np(t, 46, 16, false, W - 70));
+            int y;
+            var kar = Karta(W, "Серверы ещё не замерялись", imena.Count > 0 ? "В подписке: " + string.Join(", ", imena) : "Серверов пока не видно — проверьте, что в Karing добавлена подписка VPN", out y, "karta-net-zamera");
+            kar.Height = y;
             k.Controls.Add(kar);
             return k;
         }
-        var nad = Pult.D(Pult.G(Pult.D(Pult.G(sost, "stat")), "nadezhnost"));
         var podrobno = Pult.D(Pult.G(servData, "podrobno"));
-        var setka = new FlowLayoutPanel { Width = W + 12, AutoSize = true, WrapContents = true, Margin = new Padding(0) };
-        int kol = W < 820 ? 2 : 3, cw = (W - 12 * (kol - 1)) / kol;
-        var fZag = new Font("Segoe UI Semibold", 11f);
+        int kol = W < 820 ? 2 : 3, cw = (W - PROM * (kol - 1)) / kol;
+        // сетка карточек — ровно в ширину колонки (без запаса справа), места считаются сами
+        int strok = (rez.Count + kol - 1) / kol;
+        var setka = new Panel { Width = W, Height = strok * 152 + (strok - 1) * PROM, Margin = new Padding(0, 0, 0, PROM), Name = "setka-serverov" };
+        int nomer = 0;
         foreach (var r in rez)
         {
-            string imya = (string)r[0];
-            int sk = Pult.Cel(Pult.El(r, 1)), ping = Pult.Cel(Pult.El(r, 2));
-            var ndL = Spisok(Pult.G(nad, imya));
-            int? obr = ndL.Count > 0 ? Pult.Cel(ndL[0]) : (int?)null;
-            bool tek = imya == seychas, kl = imya == claude, mertv = sk < 5;
+            string imya = (string)r[0], imyaCh = Pult.Chisto(imya);
+            int sk = Pult.Cel(Pult.El(r, 1)), ping = Pult.Cel(Pult.El(r, 2)), adr = Pult.Cel(Pult.El(r, 3));
+            bool tek = imya == seychas, kl = imya == claude;
             var pod = Pult.D(Pult.G(podrobno, imya));
-            string vid = Pult.S(pod, "vid"), slovo = Pult.S(pod, "slovo");
-            Color vc = vid == "plohoy" ? Kras : vid == "nado_znat" ? Zhelt : Zel;
-            var prich = Pult.L(pod, "prichiny").OfType<string>().ToList();
-            var kar = new Kartochka { Width = cw, Height = 186, Margin = new Padding(0, 0, 12, 12), Ottenok = tek ? Ris.Smes(pal.Poverhnost, pal.Akcent, 0.18) : (Color?)null };
-            string metka = tek ? "сейчас" : kl ? "для Claude" : "";
-            int metkaW = metka != "" ? TextRenderer.MeasureText(metka, Font).Width + 4 : 0;
-            kar.Controls.Add(Np1(Pult.Chisto(imya), 14, 12, cw - 28 - metkaW - 8, false, fZag));
-            if (metka != "") kar.Controls.Add(Np1(metka, cw - 14 - metkaW, 14, metkaW, true, null, false));
-            if (slovo != "")
+            // обрывы — из той же функции пульта, что и на Мониторе (stat.nadezhnost), запасной путь — podrobno
+            int obr, minut;
+            var ob = ObryvyServera(imya);
+            if (ob != null) { obr = ob[0]; minut = ob[1]; }
+            else if (Pult.G(pod, "obryvov") != null) { obr = Pult.Cel(Pult.G(pod, "obryvov")); minut = Pult.Cel(Pult.G(pod, "minut")); }
+            else { obr = 0; minut = 0; }
+            pokazanoObryvov["servery:" + imyaCh] = obr;
+            var mt = MetkaServera(sk, ping, adr, obr, minut, Pult.S(pod, "slovo") == "Не работает" && sk >= 5);
+            bool mertv = mt.Slovo == "Не работает";
+
+            var kar = new Kartochka { Width = cw, Height = 152, Location = new Point(nomer % kol * (cw + PROM), nomer / kol * (152 + PROM)), Margin = Padding.Empty, Name = tek ? "server-seychas" : "server", Obvodka = tek ? Ris.AkcentV(pal) : (Color?)null };
+            nomer++;
+            string metka = tek ? "Сейчас" : kl ? "Для Claude" : "";
+            int metkaW = metka != "" ? TextW(metka, F_TEKST) + 16 : 0;
+            kar.Controls.Add(ImyaN(imyaCh, OTS, 14, cw - 2 * OTS - (metkaW > 0 ? metkaW + 8 : 0), null, F_ZAG, imyaCh + (imya.Contains("➗") ? "\nВ Karing этот сервер помечен значком ➗" : "")));
+            if (metka != "") kar.Controls.Add(Metka(metka, tek ? "akc" : null, cw - OTS - metkaW, 13));
+            var rz = Razbit(MBsIzMbit(sk));
+            kar.Controls.Add(new Chislo { Location = new Point(OTS, 44), Size = new Size(cw - 2 * OTS, 34), Znach = rz[0], Ed = rz[1] });
+            // отклик — словами (число — в подсказке); у неработающего сервера отклика нет
+            string obrT = obr == 0 ? "Без обрывов за сутки" : Mnozh(obr, "обрыв", "обрыва", "обрывов") + " за сутки";
+            string fakty = mertv ? obrT : OtklikSlovami(ping) + " · " + obrT.Substring(0, 1).ToLower() + obrT.Substring(1);
+            // одна строка: на узкой карточке не влезет — целиком в подсказке
+            var fk = ImyaN(fakty, OTS, 82, cw - 2 * OTS, "vt");
+            podskazki.SetToolTip(fk, fakty + (mertv ? "" : "\nОтклик " + ping + " мс — через сколько миллисекунд сервер отвечает. Меньше — лучше: в играх и звонках меньше задержка."));
+            kar.Controls.Add(fk);
+            int mx = OTS;
+            var mm = Metka(mt.Slovo, mt.Sost, mx, 112);
+            podskazki.SetToolTip(mm, mt.Prichiny.Count > 0 ? string.Join("\n", mt.Prichiny) : "Не больше 2 обрывов за сутки, отвечает быстро.");
+            kar.Controls.Add(mm); mx += mm.Width + 6;
+            foreach (var pm in mt.Pometki)
             {
-                var pl = new Kartochka { Location = new Point(14, 118), Size = new Size(Math.Min(cw - 160, TextRenderer.MeasureText(slovo, Font).Width + 22), 24), Ottenok = Ris.Smes(pal.Poverhnost, vc, 0.3) };
-                pl.Controls.Add(Np1(slovo, 10, 2, pl.Width - 14, false));
-                kar.Controls.Add(pl);
+                // пометки — нейтральные (это не состояние, а особенность сервера)
+                var p = Metka(pm, null, mx, 112);
+                podskazki.SetToolTip(p, pm == "Адрес меняется" ? "Во время замера сервер выходил в интернет с разных адресов: сайты видят то одну, то другую страну и могут выкидывать из аккаунтов. Сторож такие сам не выбирает."
+                                                              : "Медленнее 6 МБ/с — для фильмов и игр маловато.");
+                if (mx + p.Width <= cw - OTS - 128) { kar.Controls.Add(p); mx += p.Width + 6; }
             }
-            if (prich.Count > 0)
+            if (!tek)
             {
-                var pr = Np(string.Join("; ", prich), 14, 146, true, cw - 28); pr.AutoSize = false; pr.Size = new Size(cw - 28, 36); pr.AutoEllipsis = true;
-                kar.Controls.Add(pr);
-                podskazki.SetToolTip(pr, string.Join(Environment.NewLine, prich));
-            }
-            string skT = (sk / 8.0).ToString(sk < 80 ? "0.0" : "0");
-            var fSk = new Font("Segoe UI Semibold", 20f);
-            int skW = TextRenderer.MeasureText(skT, fSk).Width;
-            kar.Controls.Add(Np1(skT, 12, 36, skW + 6, false, fSk, false));
-            kar.Controls.Add(Np1("МБ/с", 20 + skW, 52, 60, true, null, false));
-            var otklik = Np1("отклик " + ping + " мс" + (obr != null ? " · обрывов за сутки " + obr : ""), 14, 78, cw - 28);
-            kar.Controls.Add(otklik);
-            podskazki.SetToolTip(otklik, "Отклик — через сколько миллисекунд сервер отвечает. Меньше — лучше: в играх и звонках меньше задержка.");
-            if (obr != null)
-            {
-                // полоса: доля часов без обрывов
-                int bad = Math.Max(0, Math.Min(24, obr.Value));
-                kar.Controls.Add(new Uroven { Location = new Point(14, 104), Size = new Size(cw - 28, 8), Dolya = 1 - bad / 24.0 });
-            }
-            if (!tek && !mertv)
-            {
-                var kp = Kn("Поставить", () =>
+                var kp = Kn("Подключить", () =>
                 {
-                    if (KaringVyklyuchen()) { zanyatoStroka.Text = "Сначала запустите Karing: без него сервер не поставить."; return; }
-                    if (Sprosit("Пустить сайты и программы через сервер «" + Pult.Chisto(imya) + "»? Karing перезапустится, интернет моргнёт на пару секунд.")) Deystvie("Переключение на «" + Pult.Chisto(imya) + "»", new[] { "server", imya }, d => servData = null);
+                    if (KaringVyklyuchen()) { zanyatoStroka.Text = "Сначала запустите Karing: без него сервер не подключить."; return; }
+                    if (Sprosit("Пустить сайты и программы через сервер " + imyaCh + "? Karing перезапустится, интернет моргнёт на пару секунд.")) Deystvie("Подключение сервера " + imyaCh, new[] { "server", imya }, d => servData = null);
                 }, false, 120);
-                kp.Height = 28; kp.Location = new Point(cw - 134, 116); kp.Margin = Padding.Empty; kar.Controls.Add(kp);
-                podskazki.SetToolTip(kp, "Пустить сайты и программы через этот сервер. Karing перезапустится — интернет моргнёт на пару секунд.");
+                kp.Height = 32; kp.Location = new Point(cw - OTS - 120, 108); kp.Margin = Padding.Empty;
+                kp.Enabled = !mertv && !karOff;
+                podskazki.SetToolTip(kp, mertv ? "Сервер почти не отвечает — подключать его нет смысла." : "Пустить сайты и программы через этот сервер. Karing перезапустится — интернет моргнёт на пару секунд.");
+                kar.Controls.Add(kp);
             }
             setka.Controls.Add(kar);
         }
         k.Controls.Add(setka);
-        k.Controls.Add(Tx("«Поставить» — сайты и программы пойдут через этот сервер: Karing перезапустится, интернет моргнёт на пару секунд. Полоса под цифрами — сколько часов за сутки сервер проработал без обрывов. «Адрес меняется» — сайты каждый раз видят новый адрес и могут выкидывать из аккаунтов, сторож такие сам не выбирает.", true));
         return k;
     }
 
-    // ---------- zapret ----------
+    // ---------- YouTube без VPN (zapret) ----------
     Dictionary<string, object> zapData;
     string skriptLog; long skriptLogStart; TextBox skriptPole;   // журнал скрипта zapret (для старого сторожа, который не пишет ход)
     bool zapIdet;
 
-    const string NASTROYKA_OBHODA = "Настройка обхода — набор приёмов, которыми zapret обходит блокировку. У каждой своё имя, например «general (ALT13)». Менять её вручную не нужно — для этого кнопки ниже.";
-
     Panel StrZapret()
     {
         var k = Kolonka(); int W = Shir;
-        k.Controls.Add(Shapka("zapret", "программа, которая открывает YouTube и голос Discord без VPN", null));
         bool rab = Pult.B(sost, "zapret");
         string strat = Pult.Chisto(Pult.S(sost, "strategiya")).Trim();
         bool zapOk = zapData != null && !Pult.Sboy(zapData) && Pult.G(zapData, "youtube") != null;
@@ -969,105 +1449,99 @@ partial class Okno
         // не установлен: папки нет в «Загрузках», служба не работает и настройки обхода в реестре нет
         bool netZ = zapOk && ver == "" && !rab && strat == "";
         bool estNovee = zapOk && posl != "" && ver != "" && Sravnit(posl, ver) > 0;
+        bool neNuzhen = Pult.B(Pult.D(Pult.G(sost, "nastroyki")), "zapret_ne_nuzhen");
 
-        var top = new Kartochka { Width = W, Height = 64, Margin = new Padding(0, 0, 0, 12) };
-        top.Controls.Add(new Krug { Size = new Size(34, 34), Location = new Point(14, 15), Cvet = rab ? Zel : Kras, Galka = rab });
-        int tw = W - 166 - 60 - 10;
-        top.Controls.Add(Np1(rab ? "zapret работает" : netZ ? "zapret не установлен" : "zapret не работает", 60, 10, tw, false, new Font("Segoe UI Semibold", 12f)));
-        string vText = zapData == null ? (suho ? "" : "проверяю…") : !zapOk ? "не смог проверить: " + Pult.Info(zapData) :
-            netZ ? "его нет в «Загрузках» — нажмите «Скачать и поставить zapret» ниже" :
-            ver == "" ? "версию не узнал: папки zapret-discord-youtube нет в «Загрузках»" :
-            "версия " + ver + (posl == "" ? " · новую на GitHub узнать не удалось" : estNovee ? " · есть новее: " + posl : " · последняя, обновлять не нужно");
-        if (strat != "" && !netZ) vText += (vText != "" ? " · " : "") + "настройка обхода: " + strat;
-        var vt = Np1(vText, 62, 36, tw);
-        if (strat != "") podskazki.SetToolTip(vt, vText + "\n\n" + NASTROYKA_OBHODA);
-        top.Controls.Add(vt);
-        var kp = KnZ("Проверить", Zn.Obnovit, () => { zapData = null; Perestroit(); }, false, 150);
-        podskazki.SetToolTip(kp, "Проверю, открывается ли YouTube без VPN и как идёт голос в Discord. Ничего не меняю.");
-        kp.Location = new Point(W - 166, 14); kp.Margin = Padding.Empty; top.Controls.Add(kp);
-        k.Controls.Add(top);
+        var kp = KnZ("Проверить YouTube и Discord", Zn.Obnovit, () => { zapData = null; Perestroit(); });
+        kp.Enabled = !netZ;
+        podskazki.SetToolTip(kp, netZ ? "Сначала установите zapret." : "Сторож проверит, открывается ли YouTube без VPN и как идёт голос в Discord. Ничего не меняет.");
+        k.Controls.Add(Shapka("YouTube и Discord без VPN", "Программа zapret открывает YouTube и голос Discord без VPN", kp));
 
-        if (zapData == null && !suho && !zapIdet)
+        if (zapData == null)
         {
-            zapIdet = true;
-            ThreadPool.QueueUserWorkItem(_ => { var d = Pult.Vyzov("zapret"); try { BeginInvoke((Action)(() => { zapIdet = false; zapData = d; if (tekushchaya == "zapret") Perestroit(); })); } catch { zapIdet = false; } });
-        }
-        else if (zapOk)
-        {
-            int cw2 = (W - 12) / 2;
-            var dva = new Panel { Width = W, Height = 124, Margin = new Padding(0, 0, 0, 12) };
-            var yt = Spisok(Pult.G(zapData, "youtube"));
-            bool ytOk = Pult.El(yt, 2) is bool && (bool)Pult.El(yt, 2);
-            var a = new Kartochka { Size = new Size(cw2, 124), Location = new Point(0, 0), Ottenok = Ris.Smes(pal.Poverhnost, ytOk ? Zel : Kras, pal.Temnaya ? 0.14 : 0.08) };
-            a.Controls.Add(Np1("YouTube без VPN", 14, 12, cw2 - 28));
-            a.Controls.Add(Np1(ytOk ? "открывается · " + Pult.Ch(Pult.El(yt, 1)).ToString("0.00") + " с" : "не открывается", 12, 36, cw2 - 24, false, new Font("Segoe UI Semibold", 14f)));
-            a.Controls.Add(Np(ytOk ? "zapret справляется" : rab ? "нужно подобрать настройку — кнопка ниже" : netZ ? "без zapret — только через VPN" : "zapret не работает", 14, 70, true, cw2 - 28));
-            dva.Controls.Add(a);
-            var g = Pult.D(Pult.G(zapData, "golos"));
-            var b = new Kartochka { Size = new Size(cw2, 124), Location = new Point(cw2 + 12, 0) };
-            b.Controls.Add(Np1("Голос в Discord за последние 2 минуты", 14, 12, cw2 - 28));
-            if (Pult.B(g, "est"))
+            k.Controls.Add(KartaZagruzki(W, suho ? "Проверка zapret не запускалась" : "Проверяю YouTube и голос в Discord"));
+            if (!suho && !zapIdet)
             {
-                double pot = Pult.Ch(Pult.G(g, "poteri"));
-                Color c = pot < 2 ? Zel : pot < 8 ? Zhelt : Kras;
-                var n = Np1("теряется " + pot.ToString("0.#") + " %" + (Pult.S(g, "ping") != "" ? " · отклик " + Pult.S(g, "ping") + " мс" : ""), 12, 36, cw2 - 24, false, new Font("Segoe UI Semibold", 14f));
-                n.Tag = c; b.Controls.Add(n);
-                b.Controls.Add(Np(pot < 2 ? "голос идёт чисто" : pot < 8 ? "возможны редкие заикания" : "голос будет прерываться — попробуйте «Подобрать надёжную настройку»", 14, 70, true, cw2 - 28));
+                zapIdet = true;
+                ThreadPool.QueueUserWorkItem(_ => { var d = Pult.Vyzov("zapret"); try { BeginInvoke((Action)(() => { zapIdet = false; zapData = d; if (tekushchaya == "zapret") Perestroit(); })); } catch { zapIdet = false; } });
             }
-            else
-            {
-                b.Controls.Add(Np1("вы не в звонке", 12, 36, cw2 - 24, false, new Font("Segoe UI Semibold", 14f)));
-                b.Controls.Add(Np("зайдите в голосовой канал и нажмите «Проверить»", 14, 70, true, cw2 - 28));
-            }
-            dva.Controls.Add(b);
-            k.Controls.Add(dva);
+            return k;
+        }
+        if (!zapOk)
+        {
+            k.Controls.Add(KartaOshibki(W, "Не получилось проверить zapret", Pult.Info(zapData), () => { zapData = null; Perestroit(); }));
+            return k;
+        }
+        if (netZ)
+        {
+            // не обязательно — поэтому и кнопка не главная (синей рядом с «не обязательно» не бывает)
+            var kn = Kn("Установить zapret", UstanovitZapret);
+            podskazki.SetToolTip(kn, "Сторож скачает zapret с GitHub (около 4 МБ) в «Загрузки» и включит — он будет работать сам и после перезагрузки. Windows спросит разрешение — нажмите «Да».");
+            var kNe = neNuzhen ? null : Kn("Не нужно", ZapretNeNuzhen);
+            if (kNe != null) podskazki.SetToolTip(kNe, "Больше не напоминать: YouTube и голос Discord будут идти через VPN.");
+            string bezNego = KaringVyklyuchen() ? "Без него YouTube и голос Discord пойдут через VPN, когда Karing (VPN) будет запущен"
+                           : neNuzhen ? "Вы отметили, что он не нужен: YouTube и голос Discord идут через VPN" : "Без него YouTube и голос Discord идут через VPN — так тоже работает";
+            k.Controls.Add(PolosaBedy(W, "sery", "zapret не установлен", bezNego, kn, kNe));
+            DobavitZhurnalSkripta(k, W);
+            return k;
         }
 
-        // действия: у каждой кнопки — строка «что будет» (сколько идёт и рвётся ли интернет)
-        var dey = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, 12) };
-        var ryady = new List<Tuple<Knopa, string>>();
-        if (!netZ)
+        // состояние — двумя плитками: YouTube и голос в Discord; цифры — в подсказке
+        var yt = Spisok(Pult.G(zapData, "youtube"));
+        bool ytOk = Pult.El(yt, 2) is bool && (bool)Pult.El(yt, 2);
+        var pYt = new Plit { Id = "zap-youtube", Zag = "YouTube", Sost = ytOk ? "ok" : "kras",
+            Stroka = ytOk ? "Открывается без VPN" : rab ? "Не открывается без VPN" : "Не открывается: zapret не работает",
+            Podskazka = ytOk ? "Открылся за " + Pult.Ch(Pult.El(yt, 1)).ToString("0.00") + " с." : null };
+        var g = Pult.D(Pult.G(zapData, "golos"));
+        var pGol = new Plit { Id = "zap-golos", Zag = "Голос в Discord" };
+        string golosSost = "sery";
+        if (Pult.B(g, "est"))
         {
-            ryady.Add(Tuple.Create(KnZ("Подобрать надёжную настройку", Zn.Molniya, PodobratZapret, true, 300),
-                "Переберу все настройки обхода в zapret и поставлю самую надёжную. Около 10 минут — всё это время YouTube, Discord и сайты без VPN рвутся."));
-            ryady.Add(Tuple.Create(KnZ("Ускорить YouTube", "", PodobratYoutube, false, 300),
-                "Переберу настройки zapret и поставлю ту, при которой YouTube без VPN грузится быстрее всего (из тех, что работают надёжно). Несколько минут — видео и сайты без VPN в это время прерываются."));
+            double pot = Pult.Ch(Pult.G(g, "poteri"));
+            golosSost = pot < 2 ? "ok" : pot < 8 ? "zhelt" : "kras";
+            pGol.Sost = golosSost;
+            pGol.Stroka = pot < 2 ? "Голос идёт чисто" : pot < 8 ? "Голос иногда заикается" : "Голос прерывается";
+            pGol.Podskazka = "За последние 2 минуты теряется " + pot.ToString("0.#") + " % голоса" + (Pult.S(g, "ping") != "" ? ", отклик " + Pult.S(g, "ping") + " мс" : "") + ".";
         }
-        if (estNovee || netZ || (zapOk && posl == "" && ver != ""))
-            ryady.Add(Tuple.Create(KnZ(netZ ? "Скачать и поставить zapret" : estNovee ? "Обновить до " + posl : "Обновить zapret", "", ObnovitZapret, estNovee || netZ, 300),
-                netZ ? "Скачаю zapret с GitHub (около 4 МБ) в «Загрузки» и включу — он будет работать сам и после перезагрузки. Windows спросит разрешение — нажмите «Да»."
-                     : "Скачаю новую версию с GitHub (около 4 МБ) и включу с той же настройкой обхода, ваши списки сайтов перенесу. Пока ставится, YouTube без VPN может моргнуть; Windows спросит разрешение."));
-        bool ryadom = W >= 300 + 16 + 260 + 32;
-        int y = 14;
-        foreach (var r in ryady)
+        else { pGol.Sost = "sery"; pGol.Stroka = "Вы не в звонке"; pGol.Podskazka = "Зайдите в голосовой канал Discord и нажмите «Проверить YouTube и Discord»."; }
+        // голос прерывается — так и сказано словами, цифра — в подсказке
+        k.Controls.Add(RyadPlitok(W, new List<Plit> { pYt, pGol }, "plitki-zapret"));
+
+        // что можно сделать: польза — строкой, подробности и цена — в «?»; главная кнопка — только если есть беда
+        bool nadoPodobrat = !ytOk || golosSost == "kras" || !rab;
+        int y;
+        var dey = Karta(W, "Что можно сделать", null, out y, "karta-zapret", null);
+        var k1 = Kn("Подобрать настройку", PodobratZapret, nadoPodobrat);
+        y = StrokaDeystviya(dey, W, y, "Надёжная настройка обхода", "Чтобы YouTube и голос Discord без VPN не прерывались. Около 10 минут",
+            "Сторож переберёт все настройки обхода в zapret и поставит ту, при которой ничего не обрывается." +
+            (strat != "" ? "\nСейчас стоит «" + strat + "»." : "") + "\nПока идёт подбор, YouTube и Discord без VPN рвутся.", k1);
+        var k2 = Kn("Ускорить YouTube", PodobratYoutube);
+        y = StrokaDeystviya(dey, W, y, "Быстрый YouTube", "Чтобы видео на YouTube без VPN грузилось быстрее. Несколько минут",
+            "Из надёжных настроек сторож выберет ту, при которой YouTube без VPN грузится быстрее всего.\nПока идёт подбор, видео без VPN прерывается.", k2);
+        if (ver != "")
         {
-            var kn = r.Item1;
-            kn.Location = new Point(16, y); kn.Margin = Padding.Empty;
-            dey.Controls.Add(kn);
-            int tx = ryadom ? 16 + kn.Width + 16 : 16, ty = ryadom ? y : y + 38 + 4, tw2 = W - tx - 16;
-            int th = VysTeksta(r.Item2, tw2);
-            dey.Controls.Add(Np(r.Item2, tx, ty + (ryadom && th < 38 ? (38 - th) / 2 : 0), true, tw2));
-            y = ryadom ? y + Math.Max(38, th) + 14 : ty + th + 14;
+            bool obnovit = estNovee || posl == "";
+            var k3 = obnovit ? Kn("Обновить zapret", ObnovitZapret) : null;
+            y = StrokaDeystviya(dey, W, y, estNovee ? "Новая версия zapret: " + posl : posl == "" ? "Версия zapret " + ver : "Версия zapret " + ver + " — последняя",
+                estNovee ? "Сейчас " + ver + ". Около 4 МБ с GitHub, ваши списки сайтов сохранятся" : posl == "" ? "Новую версию на GitHub узнать не удалось" : "Обновлять не нужно",
+                obnovit ? "Сторож скачает новую версию в «Загрузки», перенесёт ваши списки сайтов и включит с той же настройкой обхода.\nWindows спросит разрешение — нажмите «Да»." : null, k3);
         }
-        if (strat != "" && !netZ)
-        {
-            const string NASTR_VNIZU = "Настройка обхода — набор приёмов, которыми zapret обходит блокировку; у каждой своё имя, например «general (ALT13)». Выбирать её руками не нужно — это делают две первые кнопки.";
-            dey.Controls.Add(Np(NASTR_VNIZU, 16, y, true, W - 32));
-            y += VysTeksta(NASTR_VNIZU, W - 32) + 10;
-        }
-        // старый сторож не пишет ход — тогда видно хотя бы журнал скрипта
-        if (skriptLog != null && (hod == null || hod.Fayl == null))
-        {
-            dey.Controls.Add(Np1("Журнал скрипта:", 16, y, W - 32));
-            y += 24;
-            skriptPole = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None, Location = new Point(16, y), Size = new Size(W - 32, 184), Font = new Font("Consolas", 9.5f) };
-            dey.Controls.Add(skriptPole);
-            ObnovitZhurnalSkripta();
-            y += 184 + 10;
-        }
-        dey.Height = y + 2;
+        dey.Height = y;
         k.Controls.Add(dey);
+        DobavitZhurnalSkripta(k, W);
         return k;
+    }
+
+    // старый сторож не пишет ход — тогда видно хотя бы журнал скрипта
+    void DobavitZhurnalSkripta(Panel k, int W)
+    {
+        if (skriptLog == null || (hod != null && hod.Fayl != null)) return;
+        int y;
+        var kar = Karta(W, "Ход скрипта", null, out y, "karta-skripta");
+        skriptPole = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None, Location = new Point(OTS, y), Size = new Size(W - 2 * OTS, 184), Font = F_TEKST };
+        kar.Controls.Add(skriptPole);
+        ObnovitZhurnalSkripta();
+        kar.Height = y + 184 + OTS;
+        k.Controls.Add(kar);
     }
 
     static int Sravnit(string a, string b)
@@ -1081,22 +1555,26 @@ partial class Okno
     void PodobratZapret()
     {
         ZapustitSkript("Подбор надёжной настройки zapret", "zapret-avto.ps1", "zapret-avto.log",
-            "Переберу все настройки обхода в zapret и поставлю самую надёжную. Это около 10 минут, и всё это время YouTube, Discord и другие сайты без VPN будут обрываться. Начать?");
+            "Сторож переберёт все настройки обхода в zapret и поставит самую надёжную. Это около 10 минут, и всё это время YouTube, Discord и другие сайты без VPN будут обрываться. Начать?");
     }
 
     void PodobratYoutube()
     {
         ZapustitSkript("Ускорение YouTube без VPN", "zapret-youtube.ps1", "zapret-youtube.log",
-            "Переберу настройки zapret и поставлю ту, при которой YouTube без VPN грузится быстрее всего (из тех, что работают надёжно). Это несколько минут, и всё это время видео и сайты без VPN будут прерываться. Начать?");
+            "Сторож переберёт настройки zapret и поставит ту, при которой YouTube без VPN грузится быстрее всего (из тех, что работают надёжно). Это несколько минут, и всё это время видео и сайты без VPN будут прерываться. Начать?");
+    }
+
+    // «Установить zapret» — одно действие и на плитке Монитора, и в разделе «YouTube без VPN»
+    void UstanovitZapret()
+    {
+        ZapustitSkript("Установка zapret", "zapret-obnovit.ps1", "zapret-obnovit.log",
+            "Сторож скачает zapret с GitHub (архив около 4 МБ) в папку «Загрузки» и включит его с настройкой обхода, которая подходит большинству. Он будет работать сам и после перезагрузки. Windows спросит разрешение — нажмите «Да». Начать?");
     }
 
     void ObnovitZapret()
     {
-        bool netZ = zapData != null && !Pult.Sboy(zapData) && Pult.S(zapData, "versiya") == "";
-        ZapustitSkript(netZ ? "Установка zapret" : "Обновление zapret", "zapret-obnovit.ps1", "zapret-obnovit.log",
-            netZ
-            ? "Скачаю zapret с GitHub (архив около 4 МБ) в папку «Загрузки» и включу его с настройкой обхода, которая подходит большинству. Он будет работать сам и после перезагрузки. Windows спросит разрешение — нажмите «Да». Начать?"
-            : "Проверю новую версию zapret на GitHub. Если она есть — скачаю (около 4 МБ) в «Загрузки», перенесу ваши списки сайтов и включу с той же настройкой обхода. Старая версия останется в «Загрузках» на всякий случай. Пока ставится, интернет без VPN может моргнуть. Windows спросит разрешение — нажмите «Да». Начать?");
+        ZapustitSkript("Обновление zapret", "zapret-obnovit.ps1", "zapret-obnovit.log",
+            "Сторож проверит новую версию zapret на GitHub. Если она есть — скачает (около 4 МБ) в «Загрузки», перенесёт ваши списки сайтов и включит с той же настройкой обхода. Старая версия останется в «Загрузках» на всякий случай. Пока ставится, интернет без VPN может моргнуть. Windows спросит разрешение — нажмите «Да». Начать?");
     }
 
     // dop — свои параметры скрипта (например «-Install "general (ALT13)"»); -Hod добавляется к любому вызову, если скрипт его знает
@@ -1112,7 +1590,7 @@ partial class Okno
         // параметре — ей путь не даём, карточка тогда покажет «идёт…» и время.
         try { if (File.Exists(HOD_FAYL)) File.Delete(HOD_FAYL); } catch { }
         bool umeetHod = false;
-        try { umeetHod = System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(put), @"\$Hod\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase); } catch { }
+        try { umeetHod = Regex.IsMatch(File.ReadAllText(put), @"\$Hod\b", RegexOptions.IgnoreCase); } catch { }
         var psi = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe"),
             "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + put + "\"" + (dop != "" ? " " + dop : "") + (umeetHod ? " -Hod \"" + HOD_FAYL + "\"" : "")) { WorkingDirectory = Pult.Papka };
         if (Admin()) { psi.UseShellExecute = false; psi.CreateNoWindow = true; }
@@ -1139,7 +1617,7 @@ partial class Okno
                     if (f != null) h.Fayl = f;
                     // успех: что сказал сторож в файле хода; нет хода — код выхода скрипта (не узнали — считаем, что дошёл)
                     var otvet = h.KonecVFayle ? new Dictionary<string, object> { { "ok", Pult.B(h.Fayl, "ok") } }
-                              : new Dictionary<string, object> { { "ok", kodOk != false }, { "info", kodOk == false ? "скрипт закончился с ошибкой — подробности в файле " + log + " в папке storozh-seti" : "" } };
+                              : new Dictionary<string, object> { { "ok", kodOk != false }, { "info", kodOk == false ? "Скрипт закончился с ошибкой — подробности в его журнале в папке storozh-seti" : "" } };
                     ZakonchitHod(h, otvet);
                     ObnovitZhurnalSkripta(); zapData = null; Obnovit();
                 }));
@@ -1171,115 +1649,216 @@ partial class Okno
     Dictionary<string, object> lentaData;
     string lentaFiltr = "";
 
+    class ZapisL { public string Vremya, Vid, Tekst, TekstOdin, Podskazka, Podskazka0; public bool Neudacha; public int Skolko = 1; public List<string> Vremena = new List<string>(); }
+
+    // неудача — по смыслу строки, не только по метке пульта «НЕ ВЫШЛО.»
+    static bool Neudacha(string t)
+    {
+        return Regex.IsMatch(t ?? "", @"не вышло|ошибк|не смог|не удалось|не получилось|не заработал|не подключился|не поднялся|\bупал[аи]?\b|не ответил|перезапуски не помогают|не помогли", RegexOptions.IgnoreCase)
+               && !(t ?? "").StartsWith("Сторож исправил");
+    }
+
+    // «VPN не отвечал 19 мин — …» / «… 15 с …» / «… 1 ч 5 мин …» → секунды (null — не обрыв)
+    static int? SekundObryva(string t)
+    {
+        var m = Regex.Match(t ?? "", @"^VPN не отвечал (?:(\d+) ч (\d+) мин|(\d+) мин|(\d+) с)");
+        if (!m.Success) return null;
+        if (m.Groups[1].Success) return int.Parse(m.Groups[1].Value) * 3600 + int.Parse(m.Groups[2].Value) * 60;
+        if (m.Groups[3].Success) return int.Parse(m.Groups[3].Value) * 60;
+        return int.Parse(m.Groups[4].Value);
+    }
+
+    // записи сторожа: опрятный текст; однотипные «VPN не отвечал» подряд — одной строкой; одинаковые неудачи и
+    // повторы «Сервер …, через который идёт Claude, не отвечает уже N мин» — одной строкой с числом раз; разовые — как есть
+    List<ZapisL> ZapisiLenty()
+    {
+        var vse = Spiski(lentaData, "lenta").Where(e => e.Count >= 3).ToList();
+        var itog = new List<ZapisL>();
+        ZapisL gr = null; var grSek = new List<int>(); var grStroki = new List<string>(); string grPervoe = "";
+        Action zakryt = () =>
+        {
+            if (gr == null) return;
+            if (gr.Skolko > 1)
+            {
+                gr.Tekst = "VPN не отвечал " + Mnozh(gr.Skolko, "раз", "раза", "раз") + " с " + grPervoe + " — всего " + VremyaKr(grSek.Sum()) + ", дольше всего " + VremyaKr(grSek.Max());
+                gr.Podskazka = string.Join("\n", grStroki.Take(30)) + (grStroki.Count > 30 ? "\n…и ещё " + (grStroki.Count - 30) : "");
+            }
+            itog.Add(gr); gr = null; grSek.Clear(); grStroki.Clear();
+        };
+        foreach (var e in vse)
+        {
+            string vr = Convert.ToString(e[0] ?? ""), vid = Convert.ToString(e[1] ?? ""), syr = Convert.ToString(e[2] ?? "");
+            string t = Chel.Tekst(syr);
+            var sek = vid == "obryv" ? SekundObryva(t) : null;
+            if (sek != null)
+            {
+                if (gr == null) gr = new ZapisL { Vremya = vr, Vid = vid, Tekst = t };
+                else gr.Skolko++;
+                grSek.Add(sek.Value); grStroki.Add(vr + " — " + t); grPervoe = vr.Length >= 5 ? vr.Substring(vr.Length - 5) : vr;
+                continue;
+            }
+            zakryt();
+            bool neud = (e.Count > 3 && e[3] is bool && (bool)e[3]) || Neudacha(syr) || Neudacha(t);
+            // повторяющиеся сообщения: одинаковая неудача — где бы ни была; «сервер Claude не отвечает уже N мин» — с любым N
+            string klyuch = Regex.IsMatch(t, @"через который идёт Claude, не отвечает уже \d+ мин") ? Regex.Replace(t, @"\d+ мин", "N мин") : neud ? t : null;
+            var pred = klyuch == null ? null : itog.FirstOrDefault(z => z.Podskazka0 == klyuch);
+            if (pred != null)
+            {
+                pred.Skolko++;
+                pred.Vremena.Add(vr);
+                pred.Tekst = pred.TekstOdin + " Повторялось " + Mnozh(pred.Skolko, "раз", "раза", "раз") + ", первый раз — " + vr + ".";
+                pred.Podskazka = "Когда: " + string.Join(", ", pred.Vremena);
+                continue;
+            }
+            itog.Add(new ZapisL { Vremya = vr, Vid = vid, Tekst = t, TekstOdin = t.TrimEnd('.') + ".", Neudacha = neud, Podskazka0 = klyuch, Vremena = new List<string> { vr } });
+        }
+        zakryt();
+        return itog;
+    }
+
     Panel StrZhurnal()
     {
         var k = Kolonka(); int W = Shir;
-        k.Controls.Add(Shapka("Журнал", "", null));
+        k.Controls.Add(Shapka("Журнал", "Что сторож делал и что случалось с сетью, новые сверху", null));
         if (lentaData == null)
         {
-            k.Controls.Add(Tx("Загружаю…", true));
+            k.Controls.Add(KartaZagruzki(W, "Загружаю журнал"));
             ThreadPool.QueueUserWorkItem(_ => { var d = Pult.Vyzov("lenta"); try { BeginInvoke((Action)(() => { lentaData = d; if (tekushchaya == "zhurnal") Perestroit(); })); } catch { } });
             return k;
         }
         if (Pult.Sboy(lentaData))
         {
-            k.Controls.Add(KartaOshibki(W, "Не смог прочитать журнал сторожа", Pult.Info(lentaData), () => { lentaData = null; Perestroit(); }));
+            k.Controls.Add(KartaOshibki(W, "Не получилось прочитать журнал сторожа", Pult.Info(lentaData), () => { lentaData = null; Perestroit(); }));
             return k;
         }
-        var vse = Spiski(lentaData, "lenta").Where(e => e.Count >= 3).ToList();
-        var filtry = Ryad(); filtry.Margin = new Padding(0, 0, 0, 10); filtry.MaximumSize = new Size(W, 0);
-        foreach (var f in new[] { new[] { "", "Всё", "" }, new[] { "ispr", "Исправлено", "" }, new[] { "obryv", "Обрывы", Zn.Preduprezhd }, new[] { "zamer", "Замеры", Zn.Skorost }, new[] { "moi", "Мои действия", "" } })
+        var vse = ZapisiLenty();
+        // разделы: пустые не показываем; «Неудачи» — всё, что не вышло, из любых записей
+        var razd = new List<Tuple<string, string, int>>();
+        foreach (var f in new[] { new[] { "", "Всё" }, new[] { "neud", "Неудачи" }, new[] { "obryv", "Обрывы" }, new[] { "ispr", "Исправлено" }, new[] { "zamer", "Замеры" }, new[] { "moi", "Ваши действия" } })
         {
-            string id = f[0];
-            int n = id == "" ? vse.Count : vse.Count(e => Convert.ToString(e[1]) == id);
-            string t = f[1] + " · " + n;
-            var kn = Kn(t, () => { lentaFiltr = id; Perestroit(); }, lentaFiltr == id, TextRenderer.MeasureText(t, Font).Width + 30);
-            filtry.Controls.Add(kn);
+            int n = f[0] == "" ? vse.Sum(z => z.Skolko) : f[0] == "neud" ? vse.Where(z => z.Neudacha).Sum(z => z.Skolko) : vse.Where(z => z.Vid == f[0]).Sum(z => z.Skolko);
+            if (n > 0 || f[0] == "") razd.Add(Tuple.Create(f[0], f[1] + " · " + n, n));
         }
-        k.Controls.Add(filtry);
-        var spis = vse.Where(e => lentaFiltr == "" || Convert.ToString(e[1]) == lentaFiltr).Take(60).ToList();
-        var kar = new Kartochka { Width = W, Height = 16 + Math.Max(1, spis.Count) * 36, Margin = new Padding(0, 0, 0, 12) };
-        int y = 8;
-        foreach (var e in spis)
+        if (!razd.Any(r => r.Item1 == lentaFiltr)) lentaFiltr = "";
+        if (razd.Count > 1)
         {
-            string vid = Convert.ToString(e[1]);
-            Color c = vid == "ispr" ? Zel : vid == "obryv" ? Zhelt : vid == "zamer" ? pal.Akcent : pal.Vtorichnyy;
-            string zn = vid == "ispr" ? "" : vid == "obryv" ? Zn.Preduprezhd : vid == "zamer" ? Zn.Skorost : vid == "moi" ? "" : "";
-            kar.Controls.Add(Np1(Convert.ToString(e[0]), 16, y + 8, 98, true, null, false));
-            kar.Controls.Add(Zk(zn, 120, y + 7, 11f, c));
-            kar.Controls.Add(Np1(Pult.Chisto(Convert.ToString(e[2])), 148, y + 8, W - 170, false));
-            y += 36;
+            var punkty = razd.Select(r => r.Item2).ToArray();
+            int sw = Math.Min(W, Segmenty.Nuzhno(punkty));
+            var seg = new Segmenty { Punkty = punkty, Size = new Size(sw, 34), Margin = new Padding(0, 0, 0, PROM), Vybran = razd.FindIndex(r => r.Item1 == lentaFiltr), Name = "filtr-zhurnala" };
+            seg.Smena += i => { lentaFiltr = razd[i].Item1; Perestroit(); };
+            k.Controls.Add(seg);
         }
-        if (spis.Count == 0) kar.Controls.Add(Np(vse.Count == 0 ? "Пусто: сторож ещё ничего не делал. Записи появятся после первой проверки сети." : "В этом разделе пусто.", 16, 12, true, W - 32));
+        var spis = vse.Where(z => lentaFiltr == "" || (lentaFiltr == "neud" ? z.Neudacha : z.Vid == lentaFiltr)).Take(60).ToList();
+        var kar = new Kartochka { Width = W, Margin = new Padding(0, 0, 0, PROM), Name = "karta-zhurnala" };
+        // строка не длиннее, чем удобно читать (≈ 860 px), значки — те же залитые кружки, что на Мониторе;
+        // неудачи и обрывы — обычным цветом, рутина — серым (предупреждение не тише рутины)
+        int y = 10, xVr = OTS, vrW = 100, xZn = xVr + vrW + 8, xT = xZn + 30, tw = Math.Min(W - xT - OTS, ZHURNAL_SHIR);
+        foreach (var z in spis)
+        {
+            string sostZ = z.Neudacha ? "kras" : z.Vid == "obryv" ? "zhelt" : z.Vid == "ispr" || z.Vid == "moi" ? "ok" : "info";
+            int th = VysTeksta(z.Tekst, tw);
+            kar.Controls.Add(Stolb(z.Vremya, xVr, y + 6, vrW, false, "vt"));
+            kar.Controls.Add(new ZnakSost { Sost = sostZ, Location = new Point(xZn, y + 7), Size = new Size(20, 20) });
+            var n = Abz(z.Tekst, xT, y + 7, tw, z.Neudacha || z.Vid == "obryv" ? null : "vt");
+            if (z.Podskazka != null) podskazki.SetToolTip(n, z.Podskazka);
+            kar.Controls.Add(n);
+            y += Math.Max(24, th) + 12;
+        }
+        if (spis.Count == 0)
+        {
+            string t = vse.Count == 0 ? "Пусто: сторож ещё ничего не делал. Записи появятся после первой проверки сети" : "В этом разделе пусто";
+            kar.Controls.Add(Abz(t, OTS, 18, W - 2 * OTS, "vt")); y = 18 + VysTeksta(t, W - 2 * OTS) + 8;
+        }
+        kar.Height = y + 8;
         k.Controls.Add(kar);
         return k;
     }
 
     // ---------- Настройки ----------
+    const int NASTR_W = 860;   // переключатель — рядом с подписью: карточки настроек не шире этого (на широком окне — две рядом)
+
     Panel StrNastroyki()
     {
         var k = Kolonka(); int W = Shir;
-        k.Controls.Add(Shapka("Настройки", "", null));
-        if (sost == null) { k.Controls.Add(Tx("Загружаю…", true)); return k; }
+        k.Controls.Add(Shapka("Настройки", "Что сторож делает сам и когда он вам не мешает", null));
+        if (sost == null) { k.Controls.Add(KartaZagruzki(W, "Загружаю настройки")); return k; }
         var nas = Pult.G(sost, "nastroyki") as Dictionary<string, object>;
         if (nas == null)
         {
             // без нынешних значений переключатели показали бы неправду — лучше честно сказать
-            k.Controls.Add(KartaOshibki(W, "Не смог прочитать настройки", Pult.Sboy(sost) ? Pult.Info(sost) : "сторож не прислал настройки", () => { sost = null; Perestroit(); Obnovit(); }));
+            k.Controls.Add(KartaOshibki(W, "Не получилось прочитать настройки", Pult.Sboy(sost) ? Pult.Info(sost) : "Сторож не прислал настройки", () => { sost = null; Perestroit(); Obnovit(); }));
             return k;
         }
-        k.Controls.Add(GruppaNastroek(W, "Сторож сам", nas, new[] {
-            new[] { "avto_server", "Выбирать самый быстрый сервер", "ночью замеряет все серверы и ставит самый быстрый из надёжных" },
-            new[] { "avto_sayty", "Пускать через VPN сайты, которые не открываются", "проверяет раз в час, Claude и YouTube не трогает" },
-            new[] { "avto_spiski", "Обновлять списки заблокированных сайтов", "раз в сутки: по ним сторож решает, что пускать через VPN" } }));
-        var ne = GruppaNastroek(W, "Не мешать", nas, new[] { new[] { "ne_v_igre", "Не перезапускать Karing во время игр", "правки ждут, пока игра закроется" } });
-        int yz = ne.Height - 4;
-        bool ryadom = W >= 780;
-        int tw = ryadom ? W - 336 - 16 - 12 : W - 32;
-        ne.Controls.Add(Np1("Во время звонка в Discord правки ждут не дольше", 16, yz, tw, false));
-        ne.Controls.Add(Np1("потом звонок прервётся секунд на 10", 16, yz + 22, tw));
+        var s = Svesti();
+        // ширина та же, что у остальных экранов: на широком окне две группы рядом, переключатели — у правого края своей карточки
+        bool ryadom = W >= 900;
+        int cw = ryadom ? (W - PROM) / 2 : Math.Min(W, NASTR_W);
+        int y;
+        var g1 = Karta(cw, "Сторож сам", null, out y, "gruppa-sam");
+        // главная настройка — такой же переключатель, как остальные. Включить — действие сторожа; выключить из окна нельзя
+        // (у пульта нет такой команды): переключатель остаётся включённым, как выключить — в подсказке и строке внизу
+        var tz = new Tumbler { Vkl = s.Zadaniya, Name = "tumbler-zadaniya" };
+        tz.Smena += v =>
+        {
+            if (v) { VklyuchitZadaniya(); return; }
+            tz.Vkl = true; tz.Invalidate();
+            zanyatoStroka.Text = "Выключить проверку можно в «Планировщике заданий» Windows: задания «Storozh seti», «Storozh VPN» и «Nablyudatel migany».";
+        };
+        podskazki.SetToolTip(tz, s.Zadaniya ? "Включено. Выключить можно в «Планировщике заданий» Windows: задания «Storozh seti», «Storozh VPN» и «Nablyudatel migany»."
+                                            : "Сторож будет сам проверять сеть каждые 10 минут, даже когда окно закрыто. Прав администратора не нужно.");
+        y = StrokaNastroyki(g1, cw, y, "Проверять сеть сам каждые 10 минут", "Даже когда окно закрыто, и чинить, что сломано", tz);
+        foreach (var p in new[] {
+            new[] { "avto_server", "Выбирать лучший сервер сам", "Ночью замеряет все серверы и подключает самый быстрый из надёжных" },
+            new[] { "avto_sayty", "Пускать через VPN сайты, которые не открываются", "Проверяет раз в час. Claude и YouTube не трогает" },
+            new[] { "avto_spiski", "Обновлять списки заблокированных сайтов", "Раз в сутки: по ним сторож решает, что пускать через VPN" } })
+            y = StrokaNastroyki(g1, cw, y, p[1], p[2], TumblerNastroyki(nas, p[0]));
+        g1.Height = y;
+
+        var g2 = Karta(cw, "Игры, звонки и уведомления", null, out y, "gruppa-ne-meshat");
+        y = StrokaNastroyki(g2, cw, y, "Ждать конца игры, прежде чем перезапускать Karing (VPN)", "Правки подождут, пока игра закроется", TumblerNastroyki(nas, "ne_v_igre"));
         int tek; if (!int.TryParse(Pult.S(nas, "zvonok_min"), out tek)) tek = 20;
         var vars = new[] { 0, 10, 20, 60 };
-        var seg = new Segmenty { Punkty = vars.Select(v => v == 0 ? "не ждать" : v + " мин").ToArray(), Location = ryadom ? new Point(W - 336, yz + 2) : new Point(16, yz + 50), Size = new Size(320, 32) };
+        var punkty = vars.Select(v => v == 0 ? "Не ждать" : v + " мин").ToArray();
+        var seg = new Segmenty { Punkty = punkty, Size = new Size(Math.Max(240, Segmenty.Nuzhno(punkty)), 32) };
         int idx = Array.IndexOf(vars, tek);
         seg.Vybran = idx >= 0 ? idx : Array.IndexOf(vars, vars.OrderBy(v => Math.Abs(v - tek)).First());
         seg.Smena += i => Sohranit("zvonok_min", vars[i]);
-        ne.Controls.Add(seg);
-        ne.Height = ryadom ? yz + 58 : yz + 50 + 32 + 16;
-        k.Controls.Add(ne);
-        k.Controls.Add(GruppaNastroek(W, "Уведомления", nas, new[] { new[] { "zapret_slezhka", "Окошко, если zapret перестал работать", "и запись в журнал" } }));
-        // список «Настройка» на Мониторе: вернуть, если скрыли (только у сторожа, который его присылает)
-        if (Pult.G(sost, "nastroyka") != null)
+        y = StrokaNastroyki(g2, cw, y, "Во время звонка в Discord ждать не дольше", "Потом звонок прервётся секунд на 10", seg);
+        var tzap = TumblerNastroyki(nas, "zapret_slezhka");
+        if (!s.ZapEst) { tzap.Enabled = false; podskazki.SetToolTip(tzap, "Заработает, когда zapret будет установлен."); }
+        y = StrokaNastroyki(g2, cw, y, "Сообщать, если zapret (YouTube и Discord без VPN) перестал работать", s.ZapEst ? "Уведомление Windows и запись в журнал" : "zapret не установлен — сообщать пока не о чем", tzap);
+        g2.Height = y;
+
+        if (ryadom)
         {
-            var mon = new Kartochka { Width = W, Height = 38 + 58 + 6, Margin = new Padding(0, 0, 0, 12) };
-            mon.Controls.Add(Np1("Монитор", 16, 12, W - 32));
-            mon.Controls.Add(Np1("Показывать список «Настройка»", 16, 42, W - 16 - 76, false));
-            mon.Controls.Add(Np1("что осталось сделать, чтобы сторож работал сам; пропадает, когда всё готово", 16, 64, W - 16 - 76));
-            var tm = new Tumbler { Location = new Point(W - 60, 50), Vkl = !Pult.B(sost, "nastroyka_skryta") };
-            tm.Smena += v => { sost["nastroyka_skryta"] = !v; Sohranit("nastroyka_skryta", !v); };
-            mon.Controls.Add(tm);
-            k.Controls.Add(mon);
+            var ryad = new Panel { Width = W, Height = Math.Max(g1.Height, g2.Height), Margin = new Padding(0, 0, 0, PROM), Name = "ryad-nastroek" };
+            g1.Height = g2.Height = ryad.Height;
+            g1.Margin = g2.Margin = Padding.Empty;
+            g1.Location = new Point(0, 0); g2.Location = new Point(cw + PROM, 0);
+            ryad.Controls.Add(g1); ryad.Controls.Add(g2);
+            k.Controls.Add(ryad);
         }
-        string claude = Pult.Chisto(Pult.S(sost, "claude"));
-        if (claude != "" && claude != "как всё остальное") k.Controls.Add(Tx("Claude всегда идёт через сервер «" + claude + "».", true));
+        else { k.Controls.Add(g1); k.Controls.Add(g2); }
         return k;
     }
 
-    Kartochka GruppaNastroek(int W, string zag, Dictionary<string, object> nas, string[][] punkty)
+    Tumbler TumblerNastroyki(Dictionary<string, object> nas, string key)
     {
-        var kar = new Kartochka { Width = W, Height = 38 + punkty.Length * 58 + 6, Margin = new Padding(0, 0, 0, 12) };
-        kar.Controls.Add(Np1(zag, 16, 12, W - 32));
-        int y = 38;
-        foreach (var p in punkty)
-        {
-            string key = p[0];
-            kar.Controls.Add(Np1(p[1], 16, y + 4, W - 16 - 76, false));
-            kar.Controls.Add(Np1(p[2], 16, y + 26, W - 16 - 76));
-            var t = new Tumbler { Location = new Point(W - 60, y + 12), Vkl = Pult.B(nas, key) };
-            t.Smena += v => Sohranit(key, v);
-            kar.Controls.Add(t);
-            y += 58;
-        }
-        return kar;
+        var t = new Tumbler { Vkl = Pult.B(nas, key), Name = "tumbler-" + key };
+        t.Smena += v => Sohranit(key, v);
+        return t;
+    }
+
+    // строка настройки: подпись и пояснение слева, переключатель (или выбор) — сразу справа, в том же ряду
+    int StrokaNastroyki(Kartochka kar, int W, int y, string zag, string opis, Control upr)
+    {
+        int tw = W - 2 * OTS - upr.Width - 24;
+        kar.Controls.Add(Abz(zag, OTS, y, tw));
+        int h = VysTeksta(zag, tw);
+        kar.Controls.Add(Abz(opis, OTS, y + h + 2, tw, "vt"));
+        h += 2 + VysTeksta(opis, tw);
+        upr.Location = new Point(W - OTS - upr.Width, y + Math.Max(0, (h - upr.Height) / 2));
+        kar.Controls.Add(upr);
+        return y + Math.Max(h, upr.Height) + 18;
     }
 }

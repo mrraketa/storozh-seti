@@ -97,20 +97,54 @@ def zagruzki():
     return os.path.join(os.path.expanduser("~"), "Downloads")
 
 
+def obryvy_svyazi(ot, do=None):
+    """Обрывы связи — когда VPN не отвечал вовсе (mignaniya.log) — за промежуток [ot, do]: сколько, секунд всего,
+    самый долгий, по часам суток. Одна функция для Монитора (последние 24 ч) и итогов дня в журнале."""
+    seychas = datetime.now()
+    do = do or seychas
+    n, vsego, dl, chasy = 0, 0, 0, [[0, 0] for _ in range(24)]
+    for x in tail(os.path.join(HERE, "mignaniya.log"), 8000):
+        m = re.match(r"\[(\d\d)\.(\d\d) (\d\d):(\d\d):\d\d\] сбой (\d+) с", x)
+        if not m:
+            continue
+        try:
+            d = datetime(seychas.year, int(m[2]), int(m[1]), int(m[3]), int(m[4]))
+        except ValueError:
+            continue
+        if d > seychas:
+            d = d.replace(year=d.year - 1)
+        if ot <= d <= do:
+            sek = int(m[5])
+            n += 1; vsego += sek; dl = max(dl, sek)
+            chasy[d.hour][0] += 1; chasy[d.hour][1] += sek
+    return {"n": n, "sek": vsego, "dl": dl, "chasy": chasy}
+
+
+def obryvy_serverov(chasov=24):
+    """Сколько раз за последние сутки обрывался каждый сервер — по проверкам наблюдателя (server_stats.json),
+    ровно за последние 24 ч: {сервер: [обрывов, минут без ответа]}. Одна функция для Монитора и Серверов."""
+    st = s.load_json(s.STATS_FILE, {}) or {}
+    gran = datetime.now() - timedelta(hours=chasov)
+    agg = {}
+    for h, d in st.items():
+        try:
+            t = datetime.strptime(h, "%Y-%m-%d %H")
+        except (TypeError, ValueError):
+            continue
+        if t + timedelta(hours=1) <= gran or not isinstance(d, dict):
+            continue
+        for tag, v in d.items():
+            try:
+                ev, fail = int(v[2]), int(v[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            a = agg.setdefault(tag, [0, 0])
+            a[0] += ev; a[1] += fail
+    return agg
+
+
 def miganiya_za_sutki():
-    n = 0
-    gran = datetime.now() - timedelta(days=1)
-    try:
-        for x in open(os.path.join(HERE, "mignaniya.log"), encoding="utf-8"):
-            m = re.match(r"\[(\d\d)\.(\d\d) (\d\d):(\d\d)", x)
-            if m and "сбой" in x:
-                d = datetime(datetime.now().year, int(m[2]), int(m[1]), int(m[3]), int(m[4]))
-                if d > datetime.now():
-                    d = d.replace(year=d.year - 1)
-                n += d >= gran
-    except OSError:
-        pass
-    return n
+    return obryvy_svyazi(datetime.now() - timedelta(days=1))["n"]
 
 
 def tail(path, n):
@@ -167,7 +201,20 @@ def sostoyanie():
         "nastroyka": nastroyka_spisok(st, karing_beda, zadaniya, zapret, zapret_est, nas),
         "nastroyka_skryta": bool(nas.get("nastroyka_skryta", False)),
         "claude_znachok": claude_znachok(),
+        "golos": discord_golos(), "test_poslednii": test_poslednii(st),
+        # YouTube напрямую не открылся при проверке сторожа за последние 6 ч — время (для плитки «YouTube без VPN»)
+        "youtube_sboy": datetime.fromtimestamp(st["yt_popup"]).strftime("%d.%m.%Y %H:%M")
+                        if isinstance(st.get("yt_popup"), (int, float)) and time.time() - st["yt_popup"] < 6 * 3600 else "",
     })
+
+
+def test_poslednii(st):
+    """Последний тест скорости (из истории в state.json) — чтобы окно показало его и после перезапуска."""
+    ist = st.get("test_seti") or []
+    if not ist or not isinstance(ist[-1], list) or len(ist[-1]) < 3:
+        return None
+    z = ist[-1]
+    return {"kogda": z[0], "vpn": z[1], "pryamo": z[2], "server": z[3] if len(z) > 3 else ""}
 
 
 def nastroyka_spisok(st, karing_beda, zadaniya, zapret, zapret_est, nas):
@@ -230,22 +277,11 @@ def statistika(st):
     except OSError:
         pass
     try:
-        sc = s.server_scores(24)
+        sc = obryvy_serverov()
     except Exception:
         sc = {}
-    # обрывы по часам за последние 24 ч
-    chasy = [[0, 0] for _ in range(24)]
-    gran = datetime.now() - timedelta(hours=24)
-    try:
-        for x in open(os.path.join(HERE, "mignaniya.log"), encoding="utf-8"):
-            m = re.match(r"\[(\d\d)\.(\d\d) (\d\d):(\d\d):\d\d\] сбой (\d+) с", x)
-            if m:
-                d = datetime(datetime.now().year, int(m[2]), int(m[1]), int(m[3]), int(m[4]))
-                if gran <= d <= datetime.now():
-                    chasy[d.hour][0] += 1
-                    chasy[d.hour][1] += int(m[5])
-    except OSError:
-        pass
+    # обрывы по часам за последние 24 ч — та же функция, что и число на Мониторе
+    chasy = obryvy_svyazi(datetime.now() - timedelta(hours=24))["chasy"]
     # история замеров: когда, какой выбран, его скорость
     ist = []
     try:
@@ -263,7 +299,7 @@ def statistika(st):
         pass
     return {"dni": [[k, v[0], v[1]] for k, v in dni.items()],
             "chasy": chasy,
-            "nadezhnost": {k: [v[0], v[1], v[2]] for k, v in sc.items()},
+            "nadezhnost": {k: [v[0], v[1], 0] for k, v in sc.items()},
             "vybory": ist[-12:], **monitor_svodka()}
 
 
@@ -369,7 +405,7 @@ def sayt(domen, kuda):
         if s.NEVER_DIRECT.search(d):
             out({"ok": False, "info": f"{d} — только через VPN"}); return
         ok, info = s_zamkom(lambda: s.apply_changes([], False, add_direct=[d]))
-    s.say(("ИСПРАВЛЕНО. " if ok else "НЕ ВЫШЛО. ") + f"{'в VPN' if kuda == 'vpn' else 'напрямую'}: {d} (вручную). " + info)
+    s.say(("ИСПРАВЛЕНО. " if ok else "НЕ ВЫШЛО. ") + f"{'в VPN' if kuda == 'vpn' else 'напрямую'}: {d} — по вашей просьбе. " + info)
     log(f"сайт {d} {kuda}: {ok} {info}")
     out({"ok": ok, "info": info, "domen": d})
 
@@ -455,11 +491,11 @@ def itog_proverki(bylo, zanyat):
     isp = [x for x in stroki if x.startswith("ИСПРАВЛЕНО.")]
     ne = [x for x in stroki if x.startswith("НЕ ВЫШЛО.")]
     if ne:
-        return "Не вышло исправить: " + ne[-1][len("НЕ ВЫШЛО."):].strip()[:160]
+        return chelovek(ne[-1])[:200]
     if isp:
-        return "Исправлено: " + isp[-1][len("ИСПРАВЛЕНО."):].strip()[:160]
+        return chelovek(isp[-1])[:200]
     if stroki:
-        return stroki[-1][:180]
+        return chelovek(stroki[-1])[:200]
     return "Всё в порядке — исправлять нечего"
 
 
@@ -525,14 +561,14 @@ def test_seti():
     s.hod.shag(2)
     st = s.load_json(s.STATE, {})
     ist = st.get("test_seti", [])[-19:]
-    ist.append([datetime.now().strftime("%d.%m %H:%M"), vpn["mbit"], pryamo["mbit"]])
+    ist.append([datetime.now().strftime("%d.%m %H:%M"), vpn["mbit"], pryamo["mbit"], s.fast_current() or ""])
     st["test_seti"] = ist
     s.save_json(s.STATE, st)
     log(f"тест сети: VPN {vpn}, напрямую {pryamo}")
-    res = {"ok": True, "vpn": vpn, "pryamo": pryamo, "server": s.fast_current(), "istoriya": ist}
+    res = {"ok": True, "vpn": vpn, "pryamo": pryamo, "server": s.fast_current(), "istoriya": ist, "kogda": s.now()}
     if not vpn["mbit"]:
         res["info"] = s.karing_beda() or "через VPN ничего не скачалось — сервер не отвечает"
-    ITOG["ok"] = (f"Через VPN {mbayt(vpn['mbit'])} МБ/с" if vpn["mbit"] else f"Через VPN не скачалось ({res['info']})") \
+    ITOG["ok"] = (f"Через VPN {mbayt(vpn['mbit'])} МБ/с" if vpn["mbit"] else f"Через VPN не скачалось: {res['info']}") \
         + f", напрямую {mbayt(pryamo['mbit'])} МБ/с"
     out(res)
 
@@ -564,7 +600,7 @@ def servery_podrobno():
     st = s.load_json(s.STATE, {})
     res = (st.get("speed_test") or {}).get("results", [])
     try:
-        sc = s.server_scores(24)
+        sc = obryvy_serverov()
     except Exception:
         sc = {}
     zhivye = set(s.candidates() or [])
@@ -718,9 +754,9 @@ def sayty_istoriya():
 
 def vernut(domen):
     s.hod.nachat(f"Возвращаю {domen} как было", PRAVKA_SHAGI, "vernut", PRAVKA_VESA)
-    ITOG["ok"] = f"{domen}: вернул как было"
+    ITOG["ok"] = f"{domen} снова идёт как раньше"
     ok, info = s_zamkom(lambda: s.apply_changes([], False, remove=[domen]))
-    s.say(("ИСПРАВЛЕНО. " if ok else "НЕ ВЫШЛО. ") + f"вернул как было: {domen} (вручную). " + info)
+    s.say(("ИСПРАВЛЕНО. " if ok else "НЕ ВЫШЛО. ") + f"вернул как было: {domen} — по вашей просьбе. " + info)
     log(f"вернуть {domen}: {ok} {info}")
     out({"ok": ok, "info": info})
 
@@ -770,27 +806,184 @@ def discord_golos():
     return {"est": True, "poteri": poter, "ping": round(sum(rtt) / len(rtt)) if rtt else None, "zamerov": len(otpr)}
 
 
+def dlitelnost(sek):
+    """Длительность словами: до минуты — секунды, дальше — минуты («1162 с» → «19 мин»)."""
+    sek = int(sek)
+    return f"{sek} с" if sek < 60 else f"{round(sek / 60)} мин" if sek < 3600 else f"{sek // 3600} ч {sek % 3600 // 60} мин"
+
+
+def raz(n):
+    return f"{n} раза" if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else f"{n} раз"
+
+
+def prichina_obryva(v):
+    """Причина обрыва из mignaniya.log — словами, без скобок."""
+    v = v.strip()
+    if v.startswith("VPN-сервер: "):
+        srv = v[len("VPN-сервер: "):].split(" (")[0]
+        return ("сервер " if "," not in srv else "серверы ") + srv + (", прямой интернет при этом был" if "прямой интернет" in v else "")
+    if v.startswith("Karing не работал"):
+        return "Karing не работал, сторож его перезапустил"
+    if v.startswith("линия провайдера"):
+        return "пропал интернет у провайдера"
+    if v.startswith("роутер"):
+        return "роутер или кабель до него"
+    return "причина непонятна"
+
+
+def chelovek(t):
+    """Строка отчёта сторожа — для человека: сторож в третьем лице, без капса, служебных слов, имён процессов и скобок.
+    Сам отчёт (otchet.txt) не меняется: по нему окно и сторож разбирают, что сделано."""
+    t = re.sub(r"^\[[^\]]*\]\s*", "", t.strip())
+    isp, ne = t.startswith("ИСПРАВЛЕНО."), t.startswith("НЕ ВЫШЛО.")
+    if isp or ne:
+        t = t.split(".", 1)[1].strip()
+        chasti = []
+        for c in t.split(" | "):
+            c = c.strip()
+            c = re.sub(r"^в VPN: ", "через VPN пущены: ", c)
+            c = re.sub(r"^напрямую \(через VPN сайт отказывает\): ", "напрямую пущены, потому что через VPN не открывались: ", c)
+            c = re.sub(r"^напрямую: ", "напрямую пущены: ", c)
+            c = re.sub(r"^чиню: ", "", c)
+            c = re.sub(r"^вернул как было: ", "вернул как было: ", c)
+            c = re.sub(r"^маршруты программ \((\d+)\)", r"маршруты программ: \1", c)
+            c = re.sub(r"^списки РФ: ", "списки заблокированных сайтов: ", c)
+            chasti.append(c)
+        t = ("Сторож исправил — " if isp else "Не вышло исправить — ") + "; ".join(chasti)
+    t = re.sub(r"\s*\(вручную\)", " — по вашей просьбе", t)
+    t = t.replace(" по правилам Karing", "")
+    t = re.sub(r"(?<![Сс]торож )\b[Вв]ернул прежние настройки", "сторож вернул прежние настройки", t)
+    t = re.sub(r"(?<![Сс]торож )\bвернул как было\b", "сторож вернул как было", t)
+    t = re.sub(r"^Мигания за (\d\d\.\d\d): ни одного сбоя\.?", r"Обрывы VPN за \1: ни одного.", t)
+    if t.startswith("Мигания за "):
+        t = "Обрывы VPN за " + t[len("Мигания за "):]
+        t = re.sub(r"VPN-сервер: ([^—;]+?)(?= —)", lambda m: ("сервер " if "," not in m[1] else "серверы ") + m[1].strip(), t)
+        t = re.sub(r"Karing не работал \(перезапуск\)", "Karing не работал", t)
+        t = re.sub(r"\. Подробно — [\w.-]+\.log\.?", ".", t)
+    t = re.sub(r"(\d+) раз\b", lambda m: raz(int(m[1])), t)
+    m = re.match(r"Нужно поправить Karing \((.*)\), но запущена игра: (.*)\. Жду, пока выйдете\.?$", t)
+    if m:
+        zv = "звонок" in m[2]; ig = any("звонок" not in g for g in m[2].split(", "))
+        t = ("Сторож отложил правку Karing: сейчас " + ("идут игра и звонок в Discord" if ig and zv else "идёт игра" if ig else "идёт звонок в Discord")
+             + ". Поправит, когда " + ("они закончатся" if ig and zv else "она закончится" if ig else "он закончится") + "."
+             + (" Что поправить: " + m[1].strip() + "." if m[1].strip() else ""))
+    # «… Что поправить: X.» → целыми предложениями: сначала что случилось, потом что сторож сделал
+    m = re.match(r"^(Сторож отложил правку Karing: .*?\. Поправит, когда .*?\.)(?: Что поправить: (.*?)\.?)?$", t)
+    if m and m[2]:
+        chasti = [x.strip() for x in m[2].split(",") if x.strip()]
+        sayty = [x for x in chasti if re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$", x)]
+        bedy_ = [x for x in chasti if x not in sayty]
+        t = ((". ".join(x[:1].upper() + x[1:] for x in bedy_) + ". ") if bedy_ else "") + \
+            (("Сайты " if len(sayty) > 1 else "Сайт ") + ", ".join(sayty) + (" нужно пустить через VPN. " if len(sayty) > 1 else " нужно пустить через VPN. ") if sayty else "") + m[1]
+    m = re.match(r"Сервер (.+?) \(Claude\) не отвечает уже (\d+) мин\. Claude закреплён на (.+?) — на другой не перевожу\.?$", t)
+    if m:
+        t = f"Сервер {m[1]}, через который идёт Claude, не отвечает уже {m[2]} мин. Claude закреплён за ним — сторож не переводит его на другой сервер."
+    t = re.sub(r"^Karing не работал — запустил заново\. Поднялся\.", "Karing не работал — сторож запустил его заново, и он подключился.", t)
+    t = re.sub(r"^Karing не работал — запустил заново\. НЕ поднялся!", "Karing не работал — сторож запустил его заново, но он не подключился.", t)
+    m = re.match(r"Замер VPN-серверов: выбран (.+?) \((.+?), адрес выхода (.+?)\); стабильных серверов (\d+) из (\d+)\.(.*)$", t)
+    if m:
+        dop = re.sub(r" Назначен на всё, кроме Claude \(Claude — (.+?)\)\.", r" Через него идёт всё, кроме Claude: Claude идёт через сервер \1.", m[6])
+        dop = dop.replace(" Назначен текущим сервером Karing.", " Он стал основным сервером Karing.")
+        t = f"Замер серверов: сторож выбрал сервер {m[1]} — {m[2]}.{dop}"
+    # переключения серверов и проверки после перезапуска
+    t = re.sub(r"[Сс]ервер (.+?) \((скорость|Claude)\) перестал отвечать, временно (.+?)\.",
+               lambda m: f"Сервер {m[1]} перестал отвечать — сторож временно переключил {'Claude' if m[2] == 'Claude' else 'всё'} на сервер {m[3]}.", t)
+    t = re.sub(r"(снова стабилен), возвращаю\.", r"\1 — сторож вернул его.", t)
+    t = re.sub(r"[Дд]омашний сервер (.+?) снова стабилен", r"Основной сервер \1 снова работает ровно", t)
+    t = re.sub(r"Сейчас: Claude — (.+?), остальное — (.+?)\.", r"Сейчас Claude идёт через сервер \1, остальное — через сервер \2.", t)
+    t = re.sub(r"Сейчас через VPN — (.+?)\.", r"Сейчас VPN идёт через сервер \1.", t)
+    def posle(m):
+        punkty = [x.strip() for x in m[1].split(",") if x.strip()]
+        da = [re.sub(r" — да$", "", x) for x in punkty if x.endswith(" — да")]
+        net = [re.sub(r" — нет$", "", x) for x in punkty if x.endswith(" — нет")]
+        f = lambda l: ", ".join("вход в Steam" if x == "Steam вход" else x for x in l)
+        return ("После перезапуска работают: " + f(da) if da else "") + ("; не работают: " + f(net) if net else "")
+    t = re.sub(r"проверка после перезапуска: (.*)$", posle, t)
+    t = re.sub(r"(\S+): напрямую тормозит \((\d+)\.(\d) с\), через VPN (\d+)\.(\d) с",
+               r"\1: напрямую открывается медленно — за \2,\3 с, через VPN — за \4,\5 с", t)
+    t = re.sub(r"\bПерезапуск по его просьбе\b", "Перезапуск по вашей просьбе", t)
+    t = re.sub(r"обновились — внесу в Karing", "обновились — сторож внесёт их в Karing", t)
+    t = re.sub(r"^[Нн]е смог обновить список (.+?) — оставил прежний", r"Сторож не смог обновить список \1 и оставил прежний", t)
+    t = re.sub(r"\s*\((?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+\)", "", t)
+    t = re.sub(r"(\d+) программ\b", lambda m: m[1] + (" программу" if int(m[1]) % 10 == 1 and int(m[1]) % 100 != 11 else
+               " программы" if int(m[1]) % 10 in (2, 3, 4) and int(m[1]) % 100 not in (12, 13, 14) else " программ"), t)
+    t = re.sub(r"стратегия zapret", "настройка обхода zapret", t)
+    t = re.sub(r"(\d+(?:[.,]\d+)?) Мбит/с", lambda m: mbayt(float(m[1].replace(",", "."))) + " МБ/с", t)   # скорость — в МБ/с везде
+    # новый текст замера: без «адреса выхода» и «постоянных серверов» — новичку это ничего не говорит
+    t = re.sub(r"(Замер серверов: сторож выбрал сервер .+? — [\d,.]+ МБ/с), адрес выхода [^.]*\.(?: Серверов с постоянным адресом: \d+ из \d+\.)?", r"\1.", t)
+    # «После перезапуска не заработало: Claude.» → целым предложением
+    t = re.sub(r"[Пп]осле перезапуска не заработало: ([^.;—]+?)(?=\s*(?:[.;—]|$))",
+               lambda m: ("после перезапуска так и не заработали " if "," in m[1] else "после перезапуска так и не заработал ") + m[1].strip().replace("Steam вход", "вход в Steam"), t)
+    t = re.sub(r"\s*\((обновился\?)\)", " — видимо, он обновился", t)
+    t = re.sub(r"\bпрограмм\(ы\)", "программ", t)
+    t = re.sub(r":\s*[A-Z]:\\[^;]*(?:;\s*[A-Z]:\\[^;]*)*", "", t)
+    t = re.sub(r"\bлиния провайдера\b", "пропал интернет у провайдера", t)
+    m = re.match(r"Списки блокировок за (\d\d\.\d\d)\.\d{4}: проверено (\d+) адресов — открываются через Karing (\d+), мёртвые сайты \(не открываются нигде\) (\d+)(.*)$", t)
+    if m:
+        t = f"Списки блокировок за {m[1]}: сторож проверил {m[2]} адресов — через Karing открываются {m[3]}, не открываются нигде {m[4]}{m[5].replace(', пришлось добавить в VPN: ', '; через VPN пущены: ')}"
+    t = re.sub(r"(\d\d\.\d\d)\.20\d\d\b", r"\1", t)
+    t = re.sub(r"\b([\w-]+)\.exe\b", r"\1", t)
+    t = re.sub(r"\s*\(заняло 0 с\)", "", t)
+    t = re.sub(r"\s*\(\s*\)", "", t)
+    t = re.sub(r"([.!?;]\s+)([а-яё])", lambda m: m[1] + m[2].upper() if m[1].startswith((".", "!", "?")) else m[0], t)
+    t = re.sub(r"\s+", " ", t).strip()
+    # адрес сайта в начале — как есть, со строчной; остальное — с заглавной
+    return t if re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+:", t) else t[:1].upper() + t[1:]
+
+
+NEUDACHA = re.compile(r"^НЕ ВЫШЛО|не вышло|не удалось|не смог|не подключился|не поднялся|не заработал|упал[аи]?\b|не ответил|перезапуски не помогают|перезапуска за час не помогли", re.I)
+
+
+def neudacha(t):
+    """Неудача сторожа (а не просто событие): по смыслу строки — для раздела «Неудачи» в журнале."""
+    return bool(NEUDACHA.search(t or "")) and not t.startswith("ИСПРАВЛЕНО")
+
+
+def itog_dnya(den, mes):
+    """Итог дня по обрывам связи — той же функцией, что и Монитор, без разбивки по серверам (она — в «Серверах»)."""
+    try:
+        god = datetime.now().year
+        ot = datetime(god, mes, den)
+        if ot > datetime.now():
+            ot = ot.replace(year=god - 1)
+    except ValueError:
+        return ""
+    o = obryvy_svyazi(ot, ot + timedelta(days=1) - timedelta(seconds=1))
+    d = f"{den:02d}.{mes:02d}"
+    if not o["n"]:
+        return f"Итог за {d}: связь через VPN не пропадала."
+    return f"Итог за {d}: связь через VPN пропадала {raz(o['n'])} — всего {dlitelnost(o['sek'])}, самый долгий раз — {dlitelnost(o['dl'])}."
+
+
 def lenta():
-    """Журнал одной лентой: отчёт сторожа, обрывы, действия в окне."""
+    """Журнал одной лентой: отчёт сторожа, обрывы, действия в окне. Тексты — для человека (chelovek)."""
     sob = []
     for x in tail(s.REPORT, 200):
         m = re.match(r"\[(\d\d)\.(\d\d)\.\d{4} (\d\d:\d\d)\] (.*)", x)
         if m:
             t = m[4]
             vid = "ispr" if t.startswith("ИСПРАВЛЕНО") else "zamer" if t.startswith("Замер") else "info"
-            sob.append([f"{m[1]}.{m[2]} {m[3]}", vid, t.replace("ИСПРАВЛЕНО. ", "Исправлено: ")])
+            den = re.match(r"(?:Мигания|Обрывы VPN) за (\d\d)\.(\d\d)", t)
+            if den:
+                t = itog_dnya(int(den[1]), int(den[2])) or t
+            sob.append([f"{m[1]}.{m[2]} {m[3]}", vid, chelovek(t), neudacha(t)])
     for x in tail(os.path.join(HERE, "mignaniya.log"), 200):
         m = re.match(r"\[(\d\d\.\d\d) (\d\d:\d\d):\d\d\] сбой (\d+) с — (.*)", x)
         if m:
-            sob.append([f"{m[1]} {m[2]}", "obryv", f"VPN не отвечал {m[3]} с ({m[4].replace('VPN-сервер: ', '')})"])
+            sob.append([f"{m[1]} {m[2]}", "obryv", f"VPN не отвечал {dlitelnost(m[3])} — {prichina_obryva(m[4])}", False])
     # журнал окна: у него — storozh-okno\storozh-okno.log рядом, в выпуске для друга — рядом с StorozhSeti.exe
     okno = next((p for p in (os.path.join(os.path.dirname(HERE), "storozh-okno", "storozh-okno.log"),
                              os.path.join(os.path.dirname(HERE), "storozh-okno.log")) if os.path.exists(p)), "")
     for x in tail(okno, 300):
         m = re.match(r"\[(\d\d\.\d\d) (\d\d:\d\d):\d\d\] (Готово: |Не вышло: |настройка |скрипт: )(.*)", x)
         if m:
-            sob.append([f"{m[1]} {m[2]}", "moi", {"Готово: ": "Готово — ", "Не вышло: ": "Не вышло — ",
-                                                  "настройка ": "Настройка: ", "скрипт: ": "Запущен "}[m[3]] + m[4]])
+            t = m[4]
+            if m[3] in ("Готово: ", "Не вышло: "):
+                chast = t.split(" — ", 1)
+                t = chast[0].strip() + (": готово." if m[3] == "Готово: " else ": не вышло.") + (" " + chast[1].strip() if len(chast) > 1 else "")
+            else:
+                t = {"настройка ": "Настройка: ", "скрипт: ": "Запущен скрипт "}[m[3]] + t
+            sob.append([f"{m[1]} {m[2]}", "moi", chelovek(t), m[3] == "Не вышло: "])
     def klyuch(e):
         d, t = e[0].split(" ")
         return (d[3:5], d[0:2], t)
@@ -799,16 +992,9 @@ def lenta():
 
 
 def monitor_svodka():
-    """Длиннейший обрыв и время без VPN за сутки."""
-    gran = datetime.now() - timedelta(days=1)
-    dl, vsego = 0, 0
-    for x in tail(os.path.join(HERE, "mignaniya.log"), 400):
-        m = re.match(r"\[(\d\d)\.(\d\d) (\d\d):(\d\d):\d\d\] сбой (\d+) с", x)
-        if m:
-            d = datetime(datetime.now().year, int(m[2]), int(m[1]), int(m[3]), int(m[4]))
-            if d >= gran:
-                dl = max(dl, int(m[5])); vsego += int(m[5])
-    return {"samyy_dlinnyy": dl, "bez_vpn": vsego}
+    """Время без VPN и самый долгий обрыв за сутки — та же функция, что и число обрывов на Мониторе."""
+    o = obryvy_svyazi(datetime.now() - timedelta(days=1))
+    return {"samyy_dlinnyy": o["dl"], "bez_vpn": o["sek"]}
 
 
 def ponyatno(e):

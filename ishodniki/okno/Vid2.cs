@@ -15,6 +15,12 @@ static class Zn
     // E711 Cancel, EB90 StatusErrorFull; F16A ProgressRingDots есть только в Segoe Fluent — на Windows 10 вместо него ECCB)
     public const string GalkaKrug = "", Krug0 = "", KrugTochka = "", Krestik = "", OshibkaKrug = "";
     public static string Idet { get { return Semya == "Segoe Fluent Icons" ? "" : KrugTochka; } }
+    // 21.11 (разбор дизайна): у каждого раздела меню свой значок — Монитор (пульс), Программы (плитки приложений),
+    // Сайты (глобус), Серверы, YouTube без VPN (воспроизведение), Журнал (история), Настройки (шестерёнка)
+    public const string Monitor = "", Prilozheniya = "", Play = "", Istoriya = "",
+        Vopros = "", Info = "", Vniz = "", Vverh = "", Dobavit = "", Poisk = "",
+        Igra = "", Soobshch = "", Chat = "", OknoProg = "", Komstroka = "", Vyshka = "";
+    public static bool Fluent { get { return Semya == "Segoe Fluent Icons"; } }
     static string semya;
     public static string Semya
     {
@@ -42,23 +48,47 @@ static class Ris
         return gp;
     }
     public static Color Smes(Color a, Color b, double k) { return Color.FromArgb((int)(a.R + (b.R - a.R) * k), (int)(a.G + (b.G - a.G) * k), (int)(a.B + (b.B - a.B) * k)); }
+
+    // Что видно под элементом: заливка карточки, в которой он лежит (с её оттенком), иначе первый непрозрачный родитель.
+    // 21.11: раньше брался цвет фона окна — у скруглённых меток и кнопок на цветной карточке были квадратные углы.
+    public static Color FonPod(Control c, Color zapas)
+    {
+        for (var r = c.Parent; r != null; r = r.Parent)
+        {
+            var k = r as Kartochka;
+            if (k != null) return k.Zalivka;
+            if (r.BackColor.A == 255) return r.BackColor;
+        }
+        return zapas;
+    }
+
+    // акцент, который виден на фоне (у тем с белым акцентом — цвет текста)
+    public static Color AkcentV(Palitra p) { return p.Akcent.GetBrightness() > 0.92 ? p.Tekst : p.Akcent; }
 }
 
-// Карточка со скруглёнными углами. Цвет — Poverhnost или свой (Ottenok), фон вокруг — цвет родителя.
+// Карточка со скруглёнными углами. Цвет — Poverhnost или свой (Ottenok), фон вокруг — то, что под ней.
+// Obvodka — рамка в 2 px (выделить текущий сервер); Ramka — тонкая рамка в 1 px (поле ввода).
 class Kartochka : Panel
 {
     public Palitra Pal = Palitra.Svoya();
-    public Color? Ottenok;
+    public Color? Ottenok, Obvodka, Ramka;
+    public float? Skruglenie;
+    public virtual Color Zalivka { get { return Ottenok ?? Pal.Poverhnost; } }
     public Kartochka() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true); }
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         var g = e.Graphics;
-        Color vokrug = Pal.Fon;
-        for (var r = Parent; r != null; r = r.Parent) if (r.BackColor.A == 255) { vokrug = r.BackColor; break; }
-        g.Clear(vokrug);
+        g.Clear(Ris.FonPod(this, Pal.Fon));
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var p = Ris.Skrugl(new RectangleF(0, 0, Width - 1, Height - 1), Math.Max(6, Pal.Radius + 4)))
-        using (var b = new SolidBrush(Ottenok ?? Pal.Poverhnost)) g.FillPath(b, p);
+        float r = Skruglenie ?? Math.Max(6, Pal.Radius + 4);
+        using (var p = Ris.Skrugl(new RectangleF(0, 0, Width - 1, Height - 1), r))
+        using (var b = new SolidBrush(Zalivka)) g.FillPath(b, p);
+        if (Obvodka != null)
+            using (var p = Ris.Skrugl(new RectangleF(1, 1, Width - 3, Height - 3), Math.Max(1, r - 1)))
+            using (var pen = new Pen(Obvodka.Value, 2f)) g.DrawPath(pen, p);
+        else if (Ramka != null)
+            using (var p = Ris.Skrugl(new RectangleF(0.5f, 0.5f, Width - 2, Height - 2), r))
+            using (var pen = new Pen(Ramka.Value, 1f)) g.DrawPath(pen, p);
     }
     protected override void OnPaint(PaintEventArgs e) { }
 }
@@ -66,7 +96,43 @@ class Kartochka : Panel
 // Подписи внутри карточки: прозрачные, рисуются поверх её заливки
 class Nadpis : Label
 {
-    public Nadpis() { SetStyle(ControlStyles.SupportsTransparentBackColor, true); BackColor = Color.Transparent; AutoSize = true; }
+    public Nadpis() { SetStyle(ControlStyles.SupportsTransparentBackColor, true); BackColor = Color.Transparent; AutoSize = true; UseMnemonic = false; }
+}
+
+// Имя (программы, сайта, сервера): одна строка; не влезло — многоточие, целиком — в подсказке.
+// Только для имён: пояснения так не режутся (самопроверка это ловит).
+class NadpisImya : Nadpis
+{
+    public NadpisImya() { AutoSize = false; AutoEllipsis = true; }
+}
+
+// Поле ввода (21.11): скруглённая рамка той же высоты, что кнопка, внутри — обычное поле без рамки и подсказка-пример.
+// Рамка акцентом, пока в поле курсор.
+class Pole : Kartochka
+{
+    public readonly TextBox T = new TextBox { BorderStyle = BorderStyle.None };
+    public string Primer = "";
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, string l);
+    public Pole()
+    {
+        Controls.Add(T);
+        T.HandleCreated += (s, e) => SendMessage(T.Handle, 0x1501, (IntPtr)1, Primer);   // EM_SETCUEBANNER: пример виден, пока пусто
+        T.GotFocus += (s, e) => Invalidate();
+        T.LostFocus += (s, e) => Invalidate();
+    }
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        T.Location = new Point(12, Math.Max(2, (Height - T.Height) / 2));
+        T.Width = Math.Max(20, Width - 24);
+        base.OnLayout(e);
+    }
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        Ramka = T.Focused ? Ris.AkcentV(Pal) : Pal.Liniya;
+        Skruglenie = Math.Max(4, Pal.Radius);
+        base.OnPaintBackground(e);
+    }
 }
 
 // Подробный график: столбики (с сеткой и подписями оси), полосы (по серверам) или линия (по замерам).

@@ -655,7 +655,7 @@ def apply_changes(add_suffixes, fix_invariants, list_groups=None, add_direct=Non
     karing_start()
     karing_wait(t1)
     bad = ", ".join(k for k, v in checks.items() if not v)
-    return False, f"после перезапуска не заработало: {bad}. Вернул прежние настройки"
+    return False, f"после перезапуска не заработало: {bad} — сторож вернул прежние настройки"
 
 
 def idle_minutes():
@@ -916,7 +916,7 @@ def refresh_lists():
         tmp = path + ".new"
         r = run(["curl.exe", "-sL", "-m", "120", "-x", VPN, "-o", tmp, "-w", "%{http_code}", url], timeout=140)
         if not r or r.stdout.strip() != "200" or not os.path.exists(tmp) or os.path.getsize(tmp) < 1000:
-            say(f"не смог обновить список {fn} — оставил прежний")
+            say(f"Сторож не смог обновить список {fn} и оставил прежний.")
             if os.path.exists(tmp):
                 os.remove(tmp)
             continue
@@ -947,9 +947,9 @@ def sample_check(state, n=15):
     today = datetime.now().strftime("%d.%m.%Y")
     if st["day"] != today:
         if st["checked"]:
-            say(f"Списки блокировок за {st['day']}: проверено {st['checked']} адресов — открываются через "
-                f"Karing {st['ok']}, мёртвые сайты (не открываются нигде) {st['dead']}"
-                + (f", пришлось добавить в VPN: {', '.join(st['fixed'])}" if st["fixed"] else "") + ".")
+            say(f"Списки блокировок за {str(st['day'])[:5]}: сторож проверил {st['checked']} адресов — через "
+                f"Karing открываются {st['ok']}, не открываются нигде {st['dead']}"
+                + (f"; через VPN пущены: {', '.join(st['fixed'])}" if st["fixed"] else "") + ".")
         st.update(checked=0, ok=0, dead=0, fixed=[], to_direct=[], day=today)
     need = set()
     vybor = random.sample(pool, min(n, len(pool)))
@@ -1238,7 +1238,7 @@ def switch_roles(why, revert=None, claude_moves=True):
             st = load_json(STATE, {})
             st.update(revert)
             save_json(STATE, st)
-        say(f"{why} Не переключаю: {nelzya}.")
+        say(f"{why} Сторож не переключает: {nelzya}.")
         return False
     vedu_claude = claude_vedu()
     hod.shag(KARING_SHAGI[0])
@@ -1272,7 +1272,7 @@ def switch_roles(why, revert=None, claude_moves=True):
         st.update(revert)
         save_json(STATE, st)
     say(f"{why} Переключение не удалось — " + ("Claude не ответил" if vedu_claude else "VPN через новый сервер не заработал")
-        + ", вернул как было.")
+        + " — сторож вернул как было.")
     return False
 
 
@@ -1342,7 +1342,7 @@ def vpn_check():
                 if len(recent) >= 2:
                     if time.time() - state.get("hang_popup", 0) > 3600:
                         state["hang_popup"] = time.time()
-                        say("Karing не отвечает, два перезапуска за час не помогли — больше не перезапускаю"
+                        say("Karing не отвечает, два перезапуска за час не помогли — сторож больше не перезапускает его"
                             + (", нужен Claude." if CLAUDE_PIN else "."))
                         popup("Karing не работает, и перезапуски не помогают. "
                               + sovet("Напишите Claude «проверь что не так».", "Перезапустите Karing вручную; не поможет — переустановите его."))
@@ -1360,7 +1360,7 @@ def vpn_check():
             state["karing_hang"] = 0
             if time.time() - state.get("vpn_down_popup", 0) > 3600:
                 state["vpn_down_popup"] = time.time()
-                say("Ни один VPN-сервер не отвечает (Karing при этом жив) — похоже, сбой у VPN-сервиса. Ничего не перезапускаю.")
+                say("Ни один VPN-сервер не отвечает, хотя Karing работает — похоже, сбой у VPN-сервиса. Сторож ничего не перезапускает.")
             save_json(STATE, state)
             return
     state["karing_hang"] = 0
@@ -1400,7 +1400,7 @@ def vpn_check():
             state[failk] = 0 if alive else state.get(failk, 0) + 1
             if state[failk] >= 3 and time.time() - state.get("pin_popup", 0) > 3600:
                 state["pin_popup"] = time.time()
-                say(f"Сервер {CLAUDE_PIN} (Claude) не отвечает уже {state[failk] * 2} мин. Claude закреплён на Англии — на другой не перевожу.")
+                say(f"Сервер {CLAUDE_PIN}, через который идёт Claude, не отвечает уже {state[failk] * 2} мин. Claude закреплён за ним — сторож не переводит его на другой сервер.")
                 popup("VPN-сервер Англия не отвечает — Claude сейчас может не работать. Сторож его не переключает (Claude только через Англию).")
             continue
         alive = delay(cur) is not None or (time.sleep(5) or delay(cur) is not None)
@@ -1472,9 +1472,9 @@ def main():
             if state.get("karing_down"):
                 if karing_start():
                     ready = karing_wait(time.time() - 1)
-                    say("Karing не работал — запустил заново. " + ("Поднялся." if ready else "НЕ поднялся!"))
+                    say("Karing не работал — сторож запустил его заново" + (", и он подключился." if ready else ", но он не подключился."))
                 elif not state.get("karing_exe_net"):
-                    say("Karing не работает, а запустить его не смог — не нашёл karing.exe.")
+                    say("Karing не работает, а сторож не смог его запустить: не нашёл программу Karing.")
                     state["karing_exe_net"] = True
                 state["karing_down"] = False
             else:
@@ -1522,7 +1522,7 @@ def main():
         povt = {k: v for k, v in povt.items() if v}
         uporno = [b for b in broken if len(povt.get(b, [])) >= 6 and time.time() - povt[b][-1] < 2 * 3600]
         if uporno and state.get("inv_fix_noted") != uporno:
-            say("6 раз подряд не вышло починить перезапуском — пробую теперь раз в 2 часа: " + "; ".join(uporno))
+            say("6 раз подряд перезапуск не помог — теперь сторож пробует раз в 2 часа: " + "; ".join(uporno))
         state["inv_fix_noted"] = uporno
         broken = [b for b in broken if b not in uporno]
 
@@ -1562,7 +1562,7 @@ def main():
                 # (если zapret не установлен вовсе — YouTube идёт как любой сайт: в VPN, ниже)
                 if time.time() - state.get("yt_popup", 0) > 6 * 3600:
                     state["yt_popup"] = time.time()
-                    say(f"YouTube напрямую не открывается ({host}) — похоже, настройка обхода zapret перестала работать.")
+                    say(f"YouTube напрямую не открывается — похоже, настройка обхода zapret перестала работать. Адрес проверки: {host}.")
                     popup("YouTube перестал открываться напрямую — похоже, Роскомнадзор сломал настройку обхода zapret. "
                           + sovet("Напишите Claude «перетестируй zapret».", "Откройте «Сторож сети», раздел zapret, и подберите настройку обхода заново."))
             elif need and not covered_by_vpn(host) and opt("avto_sayty"):
@@ -1631,8 +1631,10 @@ def main():
             too_soon = since < (1800 if broken else 3 * 3600)  # несрочное копим и применяем пачкой, не чаще раза в 3 ч
             if games:
                 if state.get("wait_note") != ",".join(games):
-                    say("Нужно поправить Karing (" + ", ".join(sorted(pending) + broken) +
-                        "), но запущена игра: " + ", ".join(games) + ". Жду, пока выйдете.")
+                    zv = any("звонок" in g for g in games); ig = any("звонок" not in g for g in games)
+                    say("Сторож отложил правку Karing: сейчас " + ("идут игра и звонок в Discord" if ig and zv else "идёт игра" if ig else "идёт звонок в Discord")
+                        + ". Поправит, когда " + ("они закончатся" if ig and zv else "она закончится" if ig else "он закончится")
+                        + ". Что поправить: " + ", ".join(sorted(pending) + broken) + ".")
                     state["wait_note"] = ",".join(games)
             elif too_soon:
                 pass
@@ -1666,7 +1668,7 @@ def main():
                     state["lists_pending"] = False
                 elif lists_pending and not state.get("registry_off"):
                     state["registry_off"] = True  # большой реестр не потянулся — дальше без него
-                    say("Большой реестр РКН отключаю, в следующий раз внесу только списки сервисов.")
+                    say("Сторож отключил большой реестр РКН: в следующий раз внесёт только списки сервисов.")
         hod.shag(PROVERKA_SHAGI[5])
         state["inv_fix"] = povt
         state["pending"] = sorted(pending)

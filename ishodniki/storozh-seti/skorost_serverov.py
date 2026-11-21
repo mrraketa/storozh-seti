@@ -321,13 +321,13 @@ def main():
         if apply and not s.CLAUDE_PIN and s.fast_current() != best:
             print(f"внимание: Karing после перезапуска идёт через {s.fast_current()}, а не через {best}")
         if s.claude_vedu():
-            dop = " Назначен на всё, кроме Claude (Claude — " + s.home("claude") + ")."
+            dop = " Через него идёт всё, кроме Claude: Claude идёт через сервер " + s.home("claude") + "."
         else:
-            dop = " Назначен текущим сервером Karing."
-        s.say(f"Замер VPN-серверов: выбран {best} ({mbayt(pick[0])} МБ/с, адрес выхода {'постоянный' if stable else 'ПРЫГАЕТ — стабильных нет'}); "
-              f"стабильных серверов {len(stable)} из {len(res)}." + (dop if apply else ""))
+            dop = " Он стал основным сервером Karing."
+        s.say(f"Замер серверов: сторож выбрал сервер {best} — {mbayt(pick[0])} МБ/с, адрес выхода {'постоянный' if stable else 'меняется: постоянных серверов нет'}. "
+              f"Серверов с постоянным адресом: {len(stable)} из {len(res)}." + (dop if apply else ""))
         s.hod.konec(True, (f"Выбран {best}" if apply else f"Самый быстрый — {best}") + f", {mbayt(pick[0])} МБ/с"
-                    + ("" if stable else " (надёжных серверов нет — взял самый быстрый)"))
+                    + ("" if stable else ". Надёжных серверов нет — сторож взял самый быстрый"))
     except Exception as e:
         print("ОШИБКА:", e, "— возвращаю настройки как были" if izmenil else "— Karing не трогал")
         if izmenil:

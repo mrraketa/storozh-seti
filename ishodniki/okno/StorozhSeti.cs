@@ -219,7 +219,7 @@ static class Pult
     {
         if (string.IsNullOrEmpty(t)) return t;
         var sb = new StringBuilder();
-        t = t.Replace("➗", " (÷)");   // «Германия➗» — отдельный сервер, без значка имена совпадут
+        t = t.Replace("➗", " 2");   // «Германия➗» — отдельный сервер: без значка имена совпали бы; «÷» человеку непонятен (21.11)
         foreach (char c in t)
             if (!char.IsSurrogate(c) && !(c >= 0x2600 && c <= 0x27BF) && c != 0xFE0F && c != 0x200D) sb.Append(c);
         return Regex.Replace(sb.ToString(), "  +", " ").Trim();
@@ -334,7 +334,7 @@ partial class Okno : Form
     [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] static extern int SetWindowTheme(IntPtr h, string app, string id);
     public static void Vpered(IntPtr h) { ShowWindow(h, 9); SetForegroundWindow(h); }
 
-    static readonly string ZHURNAL = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "storozh-okno.log");
+    static string ZHURNAL { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, proba ? "storozh-okno-proba.log" : "storozh-okno.log"); } }
     internal static readonly Color Zel = Color.FromArgb(46, 160, 90), Kras = Color.FromArgb(214, 72, 64), Zhelt = Color.FromArgb(214, 150, 40), Sery = Color.FromArgb(150, 150, 160);
 
     // проверки (самопроверка, нажатия, пробы): окно за экраном, без кнопки на панели задач, без значка в трее, фокус не берёт
@@ -374,18 +374,19 @@ partial class Okno : Form
         if (proba) { ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; Location = new Point(-20000, -20000); }   // до создания окна: потом смена пересоздаёт его
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
-        menu = new Panel { Dock = DockStyle.Left, Width = 190, Padding = new Padding(10, 12, 10, 10) };
+        menu = new Panel { Dock = DockStyle.Left, Width = 204, Padding = new Padding(10, 12, 10, 10) };
         soderzh = new Panel { Dock = DockStyle.Fill, Padding = new Padding(22, 16, 22, 16) };
         zanyatoStroka = new Label { Dock = DockStyle.Bottom, Height = 28, Padding = new Padding(22, 6, 0, 0), Text = "", AutoEllipsis = true };
         Controls.Add(soderzh); Controls.Add(zanyatoStroka); Controls.Add(menu);
 
-        nazv = new Label { Text = "Сторож сети", Font = new Font("Segoe UI Semibold", 12f), Dock = DockStyle.Top, Height = 46, Padding = new Padding(4, 4, 0, 0) };
+        nazv = new Label { Text = "Сторож сети", Font = new Font("Segoe UI Semibold", 11f), Dock = DockStyle.Top, Height = 46, Padding = new Padding(6, 6, 0, 0) };
         var punktyPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        foreach (var p in new[] { new[] { "glavnaya", "Монитор", "" }, new[] { "programmy", "Программы", Zn.Prilozh }, new[] { "sayty", "Сайты", Zn.Globus },
-                                  new[] { "servery", "Серверы", Zn.Server }, new[] { "zapret", "zapret", Zn.Molniya }, new[] { "zhurnal", "Журнал", Zn.Spisok }, new[] { "nastroyki", "Настройки", Zn.Nastr } })
+        // 21.11: меню без рамок, у каждого раздела свой значок; zapret назван по задаче — «YouTube без VPN»
+        foreach (var p in new[] { new[] { "glavnaya", "Монитор", Zn.Monitor }, new[] { "programmy", "Программы", Zn.Prilozheniya }, new[] { "sayty", "Сайты", Zn.Globus },
+                                  new[] { "servery", "Серверы", Zn.Vyshka }, new[] { "zapret", "YouTube и Discord", Zn.Play }, new[] { "zhurnal", "Журнал", Zn.Istoriya }, new[] { "nastroyki", "Настройки", Zn.Nastr } })
         {
             var id = p[0];
-            var k = new Knopa { Text = p[1], Znachok = p[2], Width = 168, Height = 38, Margin = new Padding(0, 0, 0, 4), Tag = id };
+            var k = new Knopa { Text = p[1], Znachok = p[2], Width = 184, Height = 38, Margin = new Padding(0, 0, 0, 2), Tag = id, Menyu = true };
             k.Click += (s, e) => { Zapis("меню: " + id); Otkryt(id); };
             punkty.Add(k); punktyPanel.Controls.Add(k);
         }
@@ -395,7 +396,7 @@ partial class Okno : Form
         {
             trey = new NotifyIcon { Icon = Icon ?? SystemIcons.Application, Text = "Сторож сети" };
             trey.DoubleClick += (s, e) => { if (Vstraivanie.Pokazat()) return; Show(); Vpered(Handle); };
-            temaObrabotchik = () => { pal = Vstraivanie.Tema == null ? SvoyaPal() : Palitra.Iz(Vstraivanie.Tema); Perekrasit(); };
+            temaObrabotchik = () => { pal = Vstraivanie.Tema == null ? SvoyaPal() : Palitra.Iz(Vstraivanie.Tema); Perestroit(); };   // перестроить: оттенки карточек считаются от темы
             Vstraivanie.TemaSmenilas += temaObrabotchik;
             Vstraivanie.Podklyuchit(Handle, v => { if (!proba && trey != null) trey.Visible = v; });
             FormClosed += (s, e) => { if (trey != null) trey.Dispose(); };
@@ -605,12 +606,12 @@ partial class Okno : Form
     void PodognatMenu()
     {
         bool uzko = ClientSize.Width < 900;
-        int w = uzko ? 64 : 190;
+        int w = uzko ? 64 : 204;
         if (menu.Width != w) menu.Width = w;
         nazv.Visible = !uzko;
         foreach (var k in punkty)
         {
-            k.Width = uzko ? 44 : 168;
+            k.Width = uzko ? 44 : 184;
             podskazki.SetToolTip(k, uzko ? k.Text : null);
         }
     }
@@ -654,6 +655,7 @@ partial class Okno : Form
             p.Dock = DockStyle.Fill;
             soderzh.Controls.Add(p);
             postroennaya = tekushchaya;
+
         }
         catch (Exception e)
         {
@@ -666,6 +668,19 @@ partial class Okno : Form
             postroennaya = null;
         }
         finally { soderzh.ResumeLayout(); }
+        // колонка — строго по центру видимой части: отступ слева пересчитать, когда страница уже встала на место
+        // и известно, есть ли полоса прокрутки
+        try
+        {
+            if (p is FlowLayoutPanel)
+            {
+                p.PerformLayout();
+                // с полосой прокрутки правый отступ окна оказывается за ней — центр считаем между меню и полосой
+                int sd = Math.Max(0, (p.ClientSize.Width - Shir - (p.VerticalScroll.Visible ? soderzh.Padding.Right : 0)) / 2);
+                if (Math.Abs(p.Padding.Left - sd) > 1) { p.Padding = new Padding(sd, 0, 0, 0); p.PerformLayout(); }
+            }
+        }
+        catch { }
         try
         {
             if (p != null && prokrutka != Point.Empty) { p.PerformLayout(); p.AutoScrollPosition = prokrutka; }
@@ -699,12 +714,28 @@ partial class Okno : Form
     }
 
     // ---------- вид ----------
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int a, ref int v, int s);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int a, out int v, int s);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint f);
+    bool zagolovokTemnyy;
+    // заголовок отдельного окна — в тон палитре: на тёмной — тёмный (20 — Windows 11 и новые 10, 19 — старые 10)
+    void ZagolovokOkna()
+    {
+        if (!IsHandleCreated || zagolovokTemnyy == pal.Temnaya) return;
+        int v = pal.Temnaya ? 1 : 0;
+        try { if (DwmSetWindowAttribute(Handle, 20, ref v, 4) != 0) DwmSetWindowAttribute(Handle, 19, ref v, 4); } catch { }
+        zagolovokTemnyy = pal.Temnaya;
+        try { SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020); } catch { }   // перерисовать рамку
+    }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); zagolovokTemnyy = !pal.Temnaya; ZagolovokOkna(); }
+
     void Perekrasit()
     {
+        ZagolovokOkna();
         BackColor = pal.Fon; ForeColor = pal.Tekst;
         menu.BackColor = pal.Poverhnost; soderzh.BackColor = pal.Fon;
         zanyatoStroka.BackColor = pal.Fon; zanyatoStroka.ForeColor = pal.Vtorichnyy;
-        foreach (var k in punkty) { k.Glavnaya = (string)k.Tag == tekushchaya; k.Pal = pal; }
+        foreach (var k in punkty) { k.Aktivna = (string)k.Tag == tekushchaya; k.Pal = pal; }
         Krasit(menu); Krasit(soderzh);
         Invalidate(true);
     }
@@ -717,7 +748,9 @@ partial class Okno : Form
             else if (c is Kartochka) { ((Kartochka)c).Pal = pal; c.Invalidate(); }
             else if (c is Grafik2) { ((Grafik2)c).Pal = pal; c.Invalidate(); }
             else if (c is Iskra) { ((Iskra)c).Pal = pal; c.Invalidate(); }
-            else if (c is Spidometr) { ((Spidometr)c).Pal = pal; c.Invalidate(); }
+            else if (c is ZnakSost) { ((ZnakSost)c).Pal = pal; c.Invalidate(); }
+            else if (c is Chislo) { ((Chislo)c).Pal = pal; c.Invalidate(); }
+            else if (c is PictureBox) c.BackColor = Color.Transparent;
             else if (c is PolosaSutok) { ((PolosaSutok)c).Pal = pal; c.Invalidate(); }
             else if (c is Segmenty) { ((Segmenty)c).Pal = pal; c.Invalidate(); }
             else if (c is Tumbler) { ((Tumbler)c).Pal = pal; c.Invalidate(); }
@@ -728,14 +761,14 @@ partial class Okno : Form
                 if (c.IsHandleCreated) SetWindowTheme(c.Handle, pal.Temnaya ? "DarkMode_Explorer" : "Explorer", null);
                 else c.HandleCreated += (s, e) => SetWindowTheme(((Control)s).Handle, pal.Temnaya ? "DarkMode_Explorer" : "Explorer", null);
             }
-            else if (c is Krug) c.BackColor = c.Parent is Kartochka ? (((Kartochka)c.Parent).Ottenok ?? pal.Poverhnost) : pal.Fon;
             else if (c is Grafik) { ((Grafik)c).Pal = pal; c.Invalidate(); }
             else if (c is Label)
             {
                 var l = (Label)c;
                 l.Text = Pult.Chisto(l.Text);
-                if (!(l.Tag is Color)) l.ForeColor = "vt".Equals(l.Tag) ? pal.Vtorichnyy : pal.Tekst;
-                else l.ForeColor = (Color)l.Tag;
+                if (l.Tag is Color) l.ForeColor = (Color)l.Tag;
+                else if (l.Tag is string && (string)l.Tag != "vt") l.ForeColor = CvetTeksta((string)l.Tag);
+                else l.ForeColor = "vt".Equals(l.Tag) ? pal.Vtorichnyy : pal.Tekst;
                 l.BackColor = Color.Transparent;
             }
             else if (c is CheckBox) { c.ForeColor = pal.Tekst; c.BackColor = Color.Transparent; }
@@ -750,15 +783,27 @@ partial class Okno : Form
     }
 
     // заготовки элементов
-    Label Zag(string t) { return new Label { Text = t, AutoSize = true, Font = new Font("Segoe UI Semibold", 13f), Margin = new Padding(0, 0, 0, 10) }; }
-    Label Tx(string t, bool vt = false) { return new Label { Text = t, AutoSize = true, MaximumSize = new Size(Math.Min(620, Shir), 0), Tag = vt ? "vt" : null, Margin = new Padding(0, 0, 0, 8) }; }
-    Knopa Kn(string t, Action d, bool glavnaya = false, int w = 230)
+    // цвет текста состояния: тот же зелёный/жёлтый/красный, что у значков, — темнее на светлой теме, светлее на тёмной
+    Color CvetTeksta(string sost)
     {
-        var k = new Knopa { Text = t, Width = w, Height = 38, Glavnaya = glavnaya, Margin = new Padding(0, 0, 10, 8) };
+        if (sost == "akc") return Ris.AkcentV(pal);
+        if (sost != "ok" && sost != "zhelt" && sost != "kras") return sost == "sery" ? pal.Vtorichnyy : pal.Tekst;
+        var c = ZnakSost.Cvet(sost);
+        return pal.Temnaya ? Ris.Smes(c, Color.White, 0.3) : Ris.Smes(c, Color.Black, sost == "zhelt" ? 0.38 : 0.28);
+    }
+    Knopa Kn(string t, Action d, bool glavnaya = false, int w = KN_W)
+    {
+        var k = new Knopa { Text = t, Width = w, Height = KN_H, Glavnaya = glavnaya, Margin = new Padding(0, 0, 10, 8) };
         k.Click += (s, e) => { Zapis("кнопка: " + t); d(); };
         return k;
     }
-    FlowLayoutPanel Kolonka() { return new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true }; }
+    // страница: прокрутка только вниз — без полосы вбок и светлого квадрата в углу между полосами
+    FlowLayoutPanel Kolonka()
+    {
+        var k = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(Sdvig, 0, 0, 0) };
+        k.HorizontalScroll.Maximum = 0; k.AutoScroll = false; k.HorizontalScroll.Visible = false; k.AutoScroll = true;
+        return k;
+    }
     FlowLayoutPanel Ryad() { return new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = true, Margin = new Padding(0, 4, 0, 8) }; }
 
     // ---------- Настройки: сохранить одну ----------
@@ -791,7 +836,9 @@ partial class Okno : Form
         setData = Pult.Vyzov("set-seychas"); skorData = Pult.Vyzov("skorosti");
         if (Pult.Poddelka != null)
         {
-            zapData = Pult.Vyzov("zapret"); testData = Pult.Vyzov("test-seti"); saytProverka = Pult.Vyzov("proverit-sayt");
+            zapData = Pult.Vyzov("zapret");
+            testData = Pult.Poddelka.ContainsKey("test-seti") || Pult.Poddelka.ContainsKey("*") && !Pult.Poddelka.ContainsKey("sostoyanie") ? Pult.Vyzov("test-seti") : null;
+            saytProverka = Pult.Poddelka.ContainsKey("proverit-sayt") || !Pult.Poddelka.ContainsKey("sostoyanie") ? Pult.Vyzov("proverit-sayt") : null;
             saytPole = Pult.S(saytProverka, "domen");
         }
         else
@@ -828,6 +875,7 @@ partial class Okno : Form
             using (var o = new Okno(false))
             {
                 o.Show(); o.Location = new Point(-20000, -20000);
+                o.pokazanoObryvov.Clear();
                 foreach (var r in razmery)
                 {
                     o.Size = r; Zhdat(30);
@@ -838,10 +886,21 @@ partial class Okno : Form
                         catch (Exception e) { Console.WriteLine("ПАДЕНИЕ " + gde + e.GetType().Name + ": " + e.Message); plohih++; continue; }
                         if (o.oshibkaRazdela) { Console.WriteLine("ПАДЕНИЕ " + gde + "раздел показал ошибку (подробности в журнале)"); plohih++; continue; }
                         if (o.soderzh.Controls.Count == 0) { Console.WriteLine("ПУСТО " + gde + "раздел не построился"); plohih++; continue; }
-                        foreach (var z in Vylezaet(o.soderzh).Concat(Nalezaet(o.soderzh)).Concat(ShireOkna(o.soderzh)).Concat(o.Osoboe(nabor.Item1, s)).Distinct())
+                        foreach (var pm in o.punkty) if (!pm.Vlezaet()) { Console.WriteLine("ЗАМЕЧАНИЕ " + gde + "пункт меню не влезает: «" + pm.Text + "»" + (pm.Aktivna ? " (выбранный)" : "")); plohih++; }
+                        foreach (var z in Vylezaet(o.soderzh).Concat(Nalezaet(o.soderzh)).Concat(ShireOkna(o.soderzh)).Concat(o.Osoboe(nabor.Item1, s)).Concat(o.Pravila(s)).Distinct())
                         { Console.WriteLine("ЗАМЕЧАНИЕ " + gde + z); plohih++; }
                     }
                 }
+                // одни и те же числа на разных экранах: обрывы сервера на Мониторе и в «Серверах», число обрывов связи и сумма по часам
+                if (nabor.Item1 != "кривые данные")
+                    foreach (var kv in o.pokazanoObryvov.Where(x => x.Key.StartsWith("glavnaya:")).ToList())
+                    {
+                        int v; string imya = kv.Key.Substring("glavnaya:".Length);
+                        if (o.pokazanoObryvov.TryGetValue("servery:" + imya, out v) && v != kv.Value) { Console.WriteLine("ЗАМЕЧАНИЕ [" + nabor.Item1 + "] обрывы сервера " + imya + ": Монитор " + kv.Value + ", Серверы " + v); plohih++; }
+                    }
+                int ch1, ch2;
+                if (nabor.Item1 != "кривые данные" && o.pokazanoObryvov.TryGetValue("svyaz:chislo", out ch1) && o.pokazanoObryvov.TryGetValue("svyaz:chasy", out ch2) && ch1 != ch2)
+                { Console.WriteLine("ЗАМЕЧАНИЕ [" + nabor.Item1 + "] обрывы связи: число " + ch1 + ", а по часам " + ch2); plohih++; }
                 if (OshibokVFone > fonDo) { Console.WriteLine("ОШИБКИ В ФОНЕ [" + nabor.Item1 + "]: " + (OshibokVFone - fonDo) + " (подробности в журнале окна)"); plohih += OshibokVFone - fonDo; }
                 // утечка: раздел перестраивается раз в минуту — окна Windows не должны копиться
                 if (nabor.Item2 != null && (nabor.Item1 == "всё полно" || nabor.Item1 == "ход: середина"))
@@ -858,6 +917,17 @@ partial class Okno : Form
             Console.WriteLine("набор «" + nabor.Item1 + "»: " + (plohih == bylo ? "в порядке" : "замечаний " + (plohih - bylo)));
         }
         Pult.Poddelka = null; Pult.TolkoChtenie = false;
+        // тёмная палитра — тёмный заголовок отдельного окна (снимки DrawToBitmap рамку так не рисуют — проверяем само окно)
+        Pult.Poddelka = Poddelki.Polnye();
+        using (var o = new Okno(false))
+        {
+            o.Show(); o.Location = new Point(-20000, -20000); Zhdat(50);
+            int v = -1;
+            bool est = DwmGetWindowAttribute(o.Handle, 20, out v, 4) == 0 || DwmGetWindowAttribute(o.Handle, 19, out v, 4) == 0;
+            Console.WriteLine("тёмный заголовок окна на тёмной палитре: " + (!est ? "Windows не сообщает" : v == 1 ? "в порядке" : "НЕТ"));
+            if (est && v != 1) plohih++;
+        }
+        Pult.Poddelka = null;
         int zh = ProbaZhivogoHoda();
         Console.WriteLine("живой ход (файл меняется, карточка обновляется на месте): " + (zh == 0 ? "в порядке" : "замечаний " + zh));
         plohih += zh;
@@ -870,8 +940,8 @@ partial class Okno : Form
         return plohih;
     }
 
-    // Особые проверки (21.11) — то, что он выбрал по концептам: карточка хода вверху каждой страницы, список «Настройка»
-    // на Мониторе, значок Claude в главной карточке (и Claude больше нигде в ней не выпячивается).
+    // Особые проверки (21.11) — то, что он выбрал по концептам: карточка хода вверху каждой страницы, плитки на Мониторе
+    // (они же — первичная настройка новичка), значок Claude — малой плиткой, только если сторож за ним следит.
     IEnumerable<string> Osoboe(string nabor, string razdel)
     {
         var str = soderzh.Controls.Count > 0 ? soderzh.Controls[0] : null;
@@ -904,7 +974,8 @@ partial class Okno : Form
                     if (!est("Нет вестей уже 2 мин 0 с")) yield return "карточка хода: нет «нет вестей от замера»: " + t;
                     break;
                 case "ход: конец ok":
-                    if (!est("Готово: Замер серверов") || !est("Выбран Germany 1, 260 Мбит/с")) yield return "карточка хода: нет итога «Готово»: " + t;
+                    // итог сторожа «Выбран Germany 1, 260 Мбит/с» окно показывает по-человечески
+                    if (!est("Готово: Замер серверов") || !est("Выбран Германия 1, 33 МБ/с")) yield return "карточка хода: нет итога «Готово» в МБ/с и по-русски: " + t;
                     if (!kh.Zakryt.Visible) yield return "карточка хода: нет крестика «закрыть» после конца";
                     break;
                 case "ход: конец с ошибкой":
@@ -913,42 +984,141 @@ partial class Okno : Form
                     break;
             }
         }
-        if (razdel != "glavnaya" || sost == null || Pult.Sboy(sost)) yield break;
-        // список «Настройка»
-        var kn = str.Controls.Find("karta-nastroyki", true).FirstOrDefault();
-        if (nabor == "как у друга")
+        // новичок: беда «Karing не запущен» — одинаково на всех экранах, где без Karing не работает: полоса сверху с кнопкой
+        if (nabor == "как у друга" && (razdel == "programmy" || razdel == "servery" || razdel == "sayty"))
         {
-            if (kn == null) yield return "нет списка «Настройка» у друга";
-            else
-            {
-                if (!TekstyVnutri(kn).Contains("Настройка — 0 из 4")) yield return "список настройки: нет заголовка «Настройка — 0 из 4»";
-                foreach (var nk in new[] { "Скрыть", "Проверить снова", "Включить", "Замерить", "Поставить", "Не нужно" })
-                    if (!Elementy(kn).Any(c => c is Knopa && c.Text == nk && c.Visible)) yield return "список настройки: нет кнопки «" + nk + "»";
-            }
+            var pb = str.Controls.Find("polosa-bedy", false).FirstOrDefault();
+            if (pb == null || !Elementy(pb).Any(c => c is Knopa && c.Text == "Запустить Karing")) yield return "у друга нет полосы «Karing (VPN) не запущен» с кнопкой";
         }
-        else if (kn != null && (nabor == "всё полно" || nabor.StartsWith("настройка:") || nabor.StartsWith("Claude") || nabor.StartsWith("ход:")))
-            yield return "список настройки виден, хотя " + (nabor == "настройка: скрыта" ? "он скрыт" : "всё готово");
-        // значок Claude
+        if (razdel != "glavnaya" || sost == null || Pult.Sboy(sost)) yield break;
+        if (str.Controls.Find("karta-nastroyki", true).Any()) yield return "осталась отдельная карточка «Настройка» — её заменили плитки";
+        // плитки: четыре области, у каждой беды — кнопка
+        var plitki = new[] { "plit-vpn", "plit-stabil", "plit-youtube", "plit-avto" }.Select(id => str.Controls.Find(id, true).FirstOrDefault()).ToList();
+        if (plitki.Any(x => x == null)) { yield return "нет плиток VPN / Стабильность / YouTube без VPN / Автопроверка"; yield break; }
+        foreach (var pl in plitki)
+        {
+            string ss = pl.AccessibleDescription ?? "";
+            if (ss != "ok" && ss != "zhelt" && ss != "kras" && ss != "sery") yield return "плитка «" + pl.AccessibleName + "»: непонятное состояние «" + ss + "»";
+            // у «Стабильности» кнопки может не быть: полоса обрывов — прямо под ней; «Выбрать лучший сервер» — только когда поможет
+            if ((ss == "zhelt" || ss == "kras") && pl.Name != "plit-stabil" && !Elementy(pl).Any(c => c is Knopa && c.Visible)) yield return "плитка «" + pl.AccessibleName + "» в беде, а кнопки нет";
+            var knp = Elementy(pl).OfType<Knopa>().Where(c => c.Visible).ToList();
+            if (knp.Select(c => c.Top).Distinct().Count() > 1) yield return "плитка «" + pl.AccessibleName + "»: кнопки не в одну строку";
+            if (ss == "ok" && Elementy(pl).Any(c => c is Knopa && c.Visible)) yield return "плитка «" + pl.AccessibleName + "» в порядке, а кнопка есть";
+        }
+        var shapka = str.Controls.Find("shapka", false).FirstOrDefault();
+        var znak = shapka == null ? null : shapka.Controls.OfType<ZnakSost>().FirstOrDefault();
+        if (znak == null) yield return "нет фразы общего состояния со значком";
+        else
+        {
+            string obshch = znak.Sost;
+            var sost4 = plitki.Select(x => x.AccessibleDescription).ToList();
+            if (obshch == "ok" && sost4.Any(x => x == "zhelt" || x == "kras")) yield return "«Всё работает» рядом с жёлтой или красной плиткой";
+            if (obshch == "ok" && Elementy(str).Any(c => c is Knopa && ((Knopa)c).Glavnaya && c.Visible && c.Enabled)) yield return "всё работает, а синяя кнопка есть";
+            // Claude в «Требует внимания» не попадает: с ним нечего делать (сервер закреплён намеренно)
+            if (shapka.Controls.OfType<Label>().Any(l => l.Text.StartsWith("Требует внимания") && l.Text.Contains("Claude"))) yield return "Claude в строке «Требует внимания»";
+        }
+        switch (nabor)
+        {
+            case "как у друга":
+                if (znak != null && znak.Sost != "kras") yield return "у друга (Karing выключен) итог не красный";
+                if (plitki[0].AccessibleDescription != "kras" || !Elementy(plitki[0]).Any(c => c is Knopa && c.Text == "Запустить Karing" && ((Knopa)c).Glavnaya)) yield return "у друга нет красной плитки VPN с главной кнопкой «Запустить Karing»";
+                if (plitki[2].AccessibleDescription == "kras") yield return "у друга красная плитка zapret (он не обязателен)";
+                if (plitki[1].AccessibleDescription != "sery") yield return "у друга (данных нет) плитка «Стабильность» не серая";
+                foreach (var nk in new[] { "Включить", "Установить zapret", "Не нужно" })
+                    if (!Elementy(str).Any(c => c is Knopa && c.Text == nk && c.Visible)) yield return "у друга нет кнопки «" + nk + "» в плитках";
+                if (Vse(str).OfType<PolosaSutok>().Any()) yield return "у друга пустая шкала суток вместо одной строки";
+                // беда про Karing — ровно один раз (плитка VPN), «нет данных» — один раз (плитка «Стабильность»)
+                var pro = Vse(str).OfType<Label>().Where(l => VidnoVsyo(l) && l.Text.Contains("Karing")).Select(l => l.Text).ToList();
+                if (pro.Count > 1) yield return "у друга Karing упомянут " + pro.Count + " раз: " + string.Join(" | ", pro);
+                var nd = Vse(str).OfType<Label>().Where(l => VidnoVsyo(l) && l.Text.IndexOf("нет данных", StringComparison.OrdinalIgnoreCase) >= 0).Select(l => l.Text).ToList();
+                if (nd.Count > 1) yield return "у друга «нет данных» " + nd.Count + " раз: " + string.Join(" | ", nd);
+                break;
+            case "всё хорошо":
+                if (znak != null && znak.Sost != "ok") yield return "всё хорошо, а итог не зелёный";
+                break;
+            case "всё полно":
+                if (znak != null && znak.Sost != "zhelt") yield return "есть обрывы и выключена автопроверка, а итог не жёлтый";
+                break;
+        }
+        // значок Claude — компактной меткой в шапке; жёлтый, если его сервер за сутки обрывался («всё полно»: Англия — 19 обрывов)
         var z = str.Controls.Find("claude-znachok", true).FirstOrDefault();
-        Color? zhdem = nabor == "Claude: красный" ? Kras : nabor == "Claude: серый" ? Sery : nabor == "всё полно" || nabor == "Claude: зелёный" || nabor.StartsWith("ход:") ? Zel : (Color?)null;
+        string zhdem = nabor == "Claude: красный" ? "kras" : nabor == "Claude: серый" ? "sery" : nabor == "Claude: зелёный" || nabor == "всё хорошо" ? "ok" :
+                       nabor == "всё полно" || nabor == "Claude: нестабилен" || nabor.StartsWith("ход:") ? "zhelt" : null;
         if (nabor == "Claude: не показывать" || nabor == "как у друга" || nabor.StartsWith("настройка:")) { if (z != null) yield return "значок Claude виден, хотя pokazat = false"; }
         else if (zhdem != null)
         {
             if (z == null) yield return "нет значка Claude";
             else
             {
-                var tochka = z.Controls.OfType<Label>().FirstOrDefault(l => l.Text == "●");
-                if (tochka == null || !(tochka.Tag is Color) || ((Color)tochka.Tag).ToArgb() != zhdem.Value.ToArgb()) yield return "значок Claude: цвет точки не тот";
+                var zz = z.Controls.OfType<ZnakSost>().FirstOrDefault();
+                if (zz == null || zz.Sost != zhdem) yield return "значок Claude: состояние не то (" + (zz == null ? "нет" : zz.Sost) + ", ждали " + zhdem + ")";
                 if (!TekstyVnutri(z).Any(x => x.StartsWith("Claude"))) yield return "значок Claude без надписи «Claude»";
-                if (z.Parent == null || z.Parent.Name != "glavnaya-sostoyanie") yield return "значок Claude не в главной карточке";
+                if (z.Parent == null || z.Parent.Name != "shapka") yield return "значок Claude не в шапке Монитора";
+                if (z is Kartochka) yield return "значок Claude выглядит как кнопка (карточка с рамкой)";
+                if (z.Cursor != Cursors.Hand) yield return "значок Claude не нажимается (должен открывать «Серверы»)";
                 if (string.IsNullOrEmpty(podskazki.GetToolTip(z))) yield return "у значка Claude нет подсказки";
             }
         }
-        // Claude не выпячивать: в главной карточке слово «Claude» — только в значке
-        var gl = str.Controls.Find("glavnaya-sostoyanie", true).FirstOrDefault();
-        if (gl == null) yield return "нет главной карточки «Всё работает»";
-        else foreach (Control c in gl.Controls) if (c != z && c is Label && c.Text.Contains("Claude")) yield return "Claude в подписи главной карточки: «" + c.Text + "»";
     }
+
+    // Правила разбора DIZAYN-2111.md, которые проверяются на любом экране и любых данных
+    static readonly float[] RAZMERY_SHRIFTA = { 9f, 10f, 11f, 15f, 18f };
+    static readonly string[] NELZYA_V_TEKSTE = { "Мбит", "÷", ".log", "НЕ ВЫШЛО", "((", "))", "Germany", "Traceback", "WinError", "urlopen", "Python)", "две первые",
+                                                 "Karing выключен", "Karing (VPN) выключен", "Мигания", "по правилам Karing", ".exe", "Жду, пока", "не перевожу", "Чиню" };
+    // старые имена действий (одно имя — одно действие): «Поставить» → «Подключить» / «Установить zapret», «Проверить» → по смыслу
+    static readonly string[] STARYE_KNOPKI = { "Поставить", "Проверить", "Замерить", "Показать обрывы", "Проверить снова", "Скачать и поставить zapret", "Лучший сервер" };
+    IEnumerable<string> Pravila(string razdel)
+    {
+        var str = soderzh.Controls.Count > 0 ? soderzh.Controls[0] : null;
+        if (str == null) yield break;
+        var vse = Vse(str);
+        // одна синяя кнопка на экран (меню не в счёт)
+        var sinie = vse.OfType<Knopa>().Where(k => k.Glavnaya && k.Visible && k.Enabled).ToList();
+        if (sinie.Count > 1) yield return "синих кнопок " + sinie.Count + ": " + string.Join(", ", sinie.Select(k => "«" + k.Text + "»"));
+        // одна шапка, в ней не больше одной кнопки
+        var shapki = str.Controls.Cast<Control>().Where(c => c.Name == "shapka").ToList();
+        if (shapki.Count != 1) yield return "шапок на экране: " + shapki.Count;
+        else if (shapki[0].Controls.OfType<Knopa>().Count() > 1) yield return "в шапке больше одной кнопки";
+        // сносок нет: весь текст — в карточках и шапке
+        foreach (Control c in str.Controls) if (c is Label && c.Visible) yield return "текст прямо на странице (сноска): «" + c.Text + "»";
+        foreach (var c in vse)
+        {
+            if (!VidnoVsyo(c)) continue;
+            var l = c as Label;
+            if (l != null && l.Font.FontFamily.Name != Zn.Semya)
+            {
+                if (!RAZMERY_SHRIFTA.Contains((float)Math.Round(l.Font.SizeInPoints, 1))) yield return "шрифт " + l.Font.SizeInPoints + " у «" + l.Text + "» (можно 9, 10, 11, 15 и 18)";
+                int tw = TextRenderer.MeasureText(l.Text, l.Font).Width;
+                // пояснения не режутся многоточием (имена — можно, у них подсказка)
+                if (!(l is NadpisImya) && !l.AutoSize && tw > l.Width + 4) yield return "обрезано: «" + l.Text + "» (" + tw + " > " + l.Width + ")";
+                if (l is NadpisImya && tw > l.Width + 4 && string.IsNullOrEmpty(podskazki.GetToolTip(l))) yield return "имя обрезано без подсказки: «" + l.Text + "»";
+                foreach (var x in NELZYA_V_TEKSTE) if (l.Text.Contains(x)) yield return "служебное или сырое в тексте («" + x + "»): «" + l.Text + "»";
+            }
+            var kn = c as Knopa;
+            if (kn != null && !kn.Vlezaet()) yield return "подпись кнопки не влезает: «" + kn.Text + "» (" + kn.Width + " px)";
+            if (kn != null && STARYE_KNOPKI.Contains(kn.Text)) yield return "старое имя действия на кнопке: «" + kn.Text + "»";
+            if (kn != null && kn.Text == "Проверить и починить" && razdel != "glavnaya") yield return "«Проверить и починить» не на Мониторе";
+            if (kn != null && kn.Tihaya && kn.Width >= 70) yield return "голый текст вместо кнопки: «" + kn.Text + "»";
+            var sg = c as Segmenty;
+            if (sg != null && !sg.Vlezaet()) yield return "подписи выбора не влезают: «" + string.Join("|", sg.Punkty) + "» (" + sg.Width + " px)";
+        }
+        var kh = str.Controls.OfType<KartaHoda>().FirstOrDefault();
+        if (kh != null) foreach (var t in kh.Teksty) foreach (var x in NELZYA_V_TEKSTE) if (t.Contains(x)) yield return "служебное в карточке хода («" + x + "»): «" + t + "»";
+        // подпись и её переключатель рядом
+        foreach (var t in vse.OfType<Tumbler>()) if (t.Left > NASTR_W) yield return "переключатель далеко от подписи: x = " + t.Left;
+        // полосы теста — не синие (синий — цвет главной кнопки); строки журнала — не шире удобного для чтения
+        foreach (var u in vse.OfType<Uroven>().Where(u => u.Name == "polosa-testa")) if (!u.Neytralnaya) yield return "полоса теста синяя";
+        var kz = str.Controls.Find("karta-zhurnala", false).FirstOrDefault();
+        if (kz != null) foreach (var l in kz.Controls.OfType<Label>()) if (l.Width > ZHURNAL_SHIR + 4) yield return "строка журнала шире " + ZHURNAL_SHIR + " px: " + l.Width;
+        // одна ширина содержимого на всех экранах: каждая карточка и ряд — во всю колонку, как шапка
+        var sh = shapki.FirstOrDefault();
+        if (sh != null)
+            foreach (Control c in str.Controls)
+                if (c.Visible && c != sh && !(c is FlowLayoutPanel) && !(c is Segmenty) && (c is Kartochka || c is Panel) && c.Width != sh.Width)
+                    yield return "ширина не как у шапки: " + c.Name + " " + c.Width + " ≠ " + sh.Width;
+    }
+    static List<Control> Vse(Control r) { var l = new List<Control>(); foreach (Control c in r.Controls) { l.Add(c); l.AddRange(Vse(c)); } return l; }
+    static bool VidnoVsyo(Control c) { for (var r = c; r != null; r = r.Parent) if (!r.Visible) return false; return true; }
 
     // Живой ход: сторож переписывает файл, окно читает его таймером — карточка та же (страница не перестраивается),
     // недописанный файл и файл, открытый писателем, не сбивают показ; конец — итог и крестик; крестик убирает карточку.
@@ -993,7 +1163,7 @@ partial class Okno : Form
                 if (t().Contains("осталось")) ploho("при зависшем ходе показано старое «осталось»");
                 pisat(fayl(3, 100, 0, "", 0, true));
                 o.ZakonchitHod(o.hod, new Dictionary<string, object> { { "ok", true } });
-                if (!t().Contains("Готово: Замер серверов") || !t().Contains("Выбран Germany 1, 260 Мбит/с") || !kh.Zakryt.Visible) ploho("конец: нет итога или крестика: " + t());
+                if (!t().Contains("Готово: Замер серверов") || !t().Contains("Выбран Германия 1, 33 МБ/с") || !kh.Zakryt.Visible) ploho("конец: нет итога или крестика: " + t());
                 o.TikHoda();   // после конца таймер ничего не трогает
                 kh.Zakryt.PerformClick(); Zhdat(30);
                 if (o.hod != null || o.soderzh.Controls[0].Controls.OfType<KartaHoda>().Any()) ploho("крестик не убрал карточку");
@@ -1074,7 +1244,7 @@ partial class Okno : Form
     {
         suho = true; proba = true;
         int vsego = 0, ne = 0, skryto = 0;
-        foreach (var nabor in Poddelki.Vse().Where(x => x.Item1 == "всё полно" || x.Item1 == "как у друга" || x.Item1 == "всё сломано" || x.Item1 == "ход: конец ok" || x.Item1 == "ход: середина"))
+        foreach (var nabor in Poddelki.Vse().Where(x => x.Item1 == "всё полно" || x.Item1 == "как у друга" || x.Item1 == "всё сломано" || x.Item1 == "ход: конец ok" || x.Item1 == "ход: середина" || x.Item1 == "zapret сломан" || x.Item1 == "всё хорошо"))
         {
             Pult.Poddelka = nabor.Item2;
             Console.WriteLine("== " + nabor.Item1);
@@ -1095,6 +1265,7 @@ partial class Okno : Form
                         var c = el[n];
                         string imya = c is Knopa ? c.Text : c is Tumbler ? "переключатель" : "выбор «" + string.Join("|", ((Segmenty)c).Punkty) + "»";
                         if (!c.Visible) { skryto++; Console.WriteLine(s + " | " + imya + " | скрыта при этих данных"); continue; }
+                        if (!c.Enabled) { skryto++; Console.WriteLine(s + " | " + Pult.Chisto(imya) + " | неактивна при этих данных (не может сработать)"); continue; }
                         bool bylo = false;
                         EventHandler h = (a, b2) => bylo = true;
                         Action<bool> hT = v => bylo = true;
@@ -1123,7 +1294,7 @@ partial class Okno : Form
         }
         Pult.Poddelka = null;
         UbratProbu();
-        Console.WriteLine("ИТОГ: нажалось " + (vsego - ne) + " из " + vsego + (skryto > 0 ? " (ещё " + skryto + " скрыты при тех данных — так задумано)" : ""));
+        Console.WriteLine("ИТОГ: нажалось " + (vsego - ne) + " из " + vsego + (skryto > 0 ? " (ещё " + skryto + " скрыты или неактивны при тех данных — так задумано)" : ""));
         return ne;
     }
 
@@ -1311,11 +1482,21 @@ static class Poddelki
             Tuple.Create("ход: молчит", Var(polnye, null, J(new { chto = "Замер серверов", idet = true, proshlo = 200, fayl = FaylHoda(1, 48, 80, "Меряю скорость: 7 из 14", 120, false, null, "") }))),
             Tuple.Create("ход: конец ok", Var(polnye, null, J(new { chto = "Замер серверов", idet = false, proshlo = 130, fayl = FaylHoda(3, 100, 0, "", 1, true, true, "Выбран Germany 1, 260 Мбит/с"), otvet = new { ok = true } }))),
             Tuple.Create("ход: конец с ошибкой", Var(polnye, null, J(new { chto = "Замер серверов", idet = false, proshlo = 12, fayl = FaylHoda(0, 5, null, "", 1, true, false, "Karing не запущен — запустите его"), otvet = new { ok = false, info = "Karing не отвечает" } }))),
+            // всё хорошо: зелёный итог, ни одной синей кнопки на Мониторе
+            Tuple.Create("всё хорошо", Var(polnye, d => { d["bedy"] = new string[0]; d["miganiya"] = 0; d["igra"] = new string[0]; d["nastroyka"] = Nastroyka(true, true, true, true);
+                                                          d["golos"] = new Dictionary<string, object> { { "est", false } };
+                                                          var st = (Dictionary<string, object>)d["stat"]; st["chasy"] = Chasy(); st["bez_vpn"] = 0; st["samyy_dlinnyy"] = 0; st["po_serveram"] = new object[0];
+                                                          ((Dictionary<string, object>)st["nadezhnost"])["Англия🇬🇧🔃"] = new[] { 0, 0, 50 };
+                                                          ((Dictionary<string, object>)st["nadezhnost"])["Германия🇩🇪🔃"] = new[] { 0, 0, 90 }; })),
+            // zapret поставлен, но не работает: плитка «Подобрать настройку»
+            Tuple.Create("zapret сломан", Var(polnye, d => { d["zapret"] = false; d["bedy"] = new[] { "zapret не работает" }; d["nastroyka"] = Nastroyka(true, true, true, false); })),
             // список первичной настройки
             Tuple.Create("настройка: всё готово", Var(drug, d => { d["nastroyka"] = Nastroyka(true, true, true, true); })),
             Tuple.Create("настройка: скрыта", Var(drug, d => { d["nastroyka_skryta"] = true; })),
             // значок Claude на главной карточке
-            Tuple.Create("Claude: зелёный", Var(polnye, d => { d["claude_znachok"] = new Dictionary<string, object> { { "pokazat", true }, { "server", "Англия🇬🇧🔃" }, { "ok", true }, { "proveren", "20.11.2026 22:30" } }; })),
+            Tuple.Create("Claude: зелёный", Var(polnye, d => { d["claude_znachok"] = new Dictionary<string, object> { { "pokazat", true }, { "server", "Англия🇬🇧🔃" }, { "ok", true }, { "proveren", "20.11.2026 22:30" } };
+                                                               ((Dictionary<string, object>)((Dictionary<string, object>)d["stat"])["nadezhnost"])["Англия🇬🇧🔃"] = new[] { 0, 0, 50 }; })),
+            Tuple.Create("Claude: нестабилен", Var(polnye, d => { d["claude_znachok"] = new Dictionary<string, object> { { "pokazat", true }, { "server", "Англия🇬🇧🔃" }, { "ok", true }, { "proveren", "20.11.2026 22:30" } }; })),
             Tuple.Create("Claude: красный", Var(polnye, d => { d["claude_znachok"] = new Dictionary<string, object> { { "pokazat", true }, { "server", "Англия🇬🇧🔃" }, { "ok", false }, { "proveren", "20.11.2026 22:30" } }; })),
             Tuple.Create("Claude: серый", Var(polnye, d => { d["claude_znachok"] = new Dictionary<string, object> { { "pokazat", true }, { "server", "" }, { "ok", null }, { "proveren", "" } }; })),
             Tuple.Create("Claude: не показывать", Var(polnye, d => { d["claude_znachok"] = new Dictionary<string, object> { { "pokazat", false }, { "server", "Англия" }, { "ok", true }, { "proveren", "20.11.2026 22:30" } }; })),
@@ -1371,7 +1552,6 @@ static class Poddelki
         }
         finally { Pult.Poddelka = bylo; Pult.TolkoChtenie = false; }
         d["zapret"] = "{\"youtube\":[\"204\",0.12,true],\"golos\":{\"est\":true,\"poteri\":8.8,\"ping\":71},\"versiya\":\"1.10.4\",\"posledn\":\"1.10.5\"}";
-        d["test-seti"] = "{\"ok\":true,\"vpn\":{\"mbit\":96,\"ping\":112},\"pryamo\":{\"mbit\":410,\"ping\":9},\"server\":\"Литва\"}";
         d["*"] = J(new { ok = false, info = "проверка: команда не вызывается" });
         return d;
     }
@@ -1384,7 +1564,8 @@ static class Poddelki
         return new Dictionary<string, string>
         {
             { "sostoyanie", J(new { karing = false, zapret = false, strategiya = "", server = (string)null, skorost = (object)null, claude = "как всё остальное", posledniy = (string)null, zamer = (string)null,
-                                    miganiya = 0, igra = new string[0], bedy = new[] { "Karing не работает", "zapret не работает", "Сторож не запускается сам — включите проверку каждые 10 минут" },
+                                    miganiya = 0, igra = new string[0], zapret_est = false, golos = new { est = false }, youtube_sboy = "", test_poslednii = (object)null,
+                                    bedy = new[] { "Karing не запущен — запустите его и включите подключение", "zapret не установлен — без него YouTube и голос Discord напрямую не работают", "Сторож не запускается сам — включите проверку каждые 10 минут" },
                                     nastroyka = Nastroyka(false, false, false, false), nastroyka_skryta = false,
                                     claude_znachok = new { pokazat = false, server = "", ok = (object)null, proveren = "" },
                                     otchet = new string[0], mig_log = new string[0], pult_log = new string[0], nastroyki = nas,
@@ -1399,7 +1580,6 @@ static class Poddelki
             { "skorosti", J(new { ok = false, info = "ошибка: <urlopen error [WinError 10061] Подключение не установлено>" }) },
             { "set-seychas", J(new { ok = true, vniz = 0.12, vverh = 0.01, vpn = 0.0 }) },
             { "zapret", J(new { youtube = new object[] { 0, 8.0, false }, golos = new { est = false }, versiya = "", posledn = "" }) },
-            { "test-seti", J(new { ok = true, vpn = new { mbit = 0, ping = (object)null }, pryamo = new { mbit = 85.3, ping = 14 }, server = (string)null }) },
             { "proverit-sayt", J(new { ok = true, domen = "youtube.com", napryamuyu = new object[] { 0, 12.0, "не открывается" }, vpn = new object[] { 0, 12.0, "не открывается" }, server = (string)null,
                                        sovet = "не открывается нигде — похоже, сайт сам не работает", deystvie = "", uzhe_vpn = false, uzhe_napr = false }) },
             { "*", J(new { ok = true, info = "проба" }) },
@@ -1416,13 +1596,17 @@ static class Poddelki
         {
             { "sostoyanie", J(new { karing = true, zapret = true, strategiya = "general (ALT13)", server = "Германия🇩🇪🔃", skorost = 217, claude = "Англия🇬🇧🔃", posledniy = "20.11.2026 21:50", zamer = "19.11.2026 01:31",
                                     miganiya = 7, igra = new[] { "dota2.exe", "звонок в Discord" },
-                                    bedy = new[] { "zapret не работает", "Пустить через VPN: rutracker.org, nnmclub.to — напрямую не открывается или тормозит", "Сторож не запускается сам — включите проверку каждые 10 минут" },
-                                    nastroyka = Nastroyka(true, true, true, true), nastroyka_skryta = false,
+                                    bedy = new[] { "Пустить через VPN: rutracker.org, nnmclub.to — напрямую не открывается или тормозит", "Сторож не запускается сам — включите проверку каждые 10 минут",
+                                                   "Нет программы curl.exe (она есть в Windows 10 и 11) — без неё сторож не проверяет сайты и не меряет скорость" },
+                                    zapret_est = true, nastroyka = Nastroyka(true, false, true, true), nastroyka_skryta = false,
+                                    golos = new { est = true, poteri = 8.8, ping = 71 }, youtube_sboy = "",
+                                    test_poslednii = new { kogda = "20.11 21:30", vpn = 96, pryamo = 410, server = "Германия🇩🇪🔃" },
                                     claude_znachok = new { pokazat = true, server = "Англия🇬🇧🔃", ok = true, proveren = "20.11.2026 22:30" },
                                     otchet = new string[0], mig_log = new string[0], pult_log = new string[0], nastroyki = nas,
                                     stat = new { dni = new object[0], chasy = Chasy(0, 1, 0, 0, 3, 0, 0, 2, 0, 0, 0, 0, 1), nadezhnost = nad,
                                                  vybory = new object[] { new object[] { "18.11 03:00", "Германия🇩🇪🔃", 284 }, new object[] { "19.11 03:00", "Австрия🇦🇹🔃", 217 }, new object[] { "20.11 03:00", "Германия🇩🇪🔃", 260 } },
-                                                 samyy_dlinnyy = 245, bez_vpn = 3725 } }) },
+                                                 samyy_dlinnyy = 245, bez_vpn = 3725,
+                                                 po_serveram = new object[] { new object[] { "Англия🇬🇧🔃", 4, 140 }, new object[] { "Германия🇩🇪🔃", 3, 105 } } } }) },
             { "programmy", J(new { programmy = new object[] {
                 new { exe = "msedge.exe", seychas = "Германия🇩🇪🔃, напрямую", kb = 50000, marshrut = "avto", pravilo = false, karing = true, v_seti = true },
                 new { exe = "claude.exe", seychas = "Англия🇬🇧🔃", kb = 900, marshrut = "avto", pravilo = false, karing = true, v_seti = true },
@@ -1445,7 +1629,11 @@ static class Poddelki
                 new { domen = "animestars.org", vid = "direct", kogda = "19.11.2026 07:19" }, new { domen = "steampowered.com", vid = "vpn", kogda = "18.11.2026 22:59" },
                 new { domen = "ochen-dlinnyy-adres-sayta-dlya-proverki.example.com", vid = "vpn", kogda = "18.11.2026 19:48" } } }) },
             { "lenta", J(new { lenta = new object[] {
+                new object[] { "21.11 01:26", "moi", "Готово — Замер серверов — Выбран Нидерланды🇳🇱🔃, 300 Мбит/с (заняло 0 с)" },
+                new object[] { "21.11 00:00", "info", "Мигания за 20.11: VPN-сервер: Англия — 15 раз; Karing не работал — 2 раз. Подробно — mignaniya.log." },
                 new object[] { "20.11 21:21", "obryv", "VPN не отвечал 15 с (Англия🇬🇧🔃 (прямой интернет при этом был))" },
+                new object[] { "20.11 21:14", "obryv", "VPN не отвечал 37 с (Англия🇬🇧🔃 (прямой интернет при этом был))" },
+                new object[] { "20.11 20:58", "obryv", "VPN не отвечал 245 с (Karing не работал (перезапуск))" },
                 new object[] { "20.11 18:40", "info", "НЕ ВЫШЛО. чиню: Claude не отвечает по правилам Karing. после перезапуска не заработало: Claude. Вернул прежние настройки, а ещё очень длинная строка, чтобы проверить, что текст не вылезает за край карточки журнала" },
                 new object[] { "20.11 03:00", "zamer", "Замер серверов: выбран Германия🇩🇪🔃" },
                 new object[] { "19.11 22:59", "ispr", "Исправлено: в VPN: steampowered.com" },
@@ -1454,7 +1642,7 @@ static class Poddelki
                                                                               { "Telegram.exe", new { mbayt = 0.0, kuda = "Германия🇩🇪🔃" } } } }) },
             { "set-seychas", J(new { ok = true, vniz = 3.21, vverh = 0.12, vpn = 2.5 }) },
             { "zapret", J(new { youtube = new object[] { 204, 0.12, true }, golos = new { est = true, poteri = 8.8, ping = 71, zamerov = 120 }, versiya = "1.10.4", posledn = "1.10.5" }) },
-            { "test-seti", J(new { ok = true, vpn = new { mbit = 96, ping = 112 }, pryamo = new { mbit = 410, ping = 9 }, server = "Нидерланды🇳🇱🔃➗ резервный длинный" }) },
+            { "test-seti", J(new { ok = true, vpn = new { mbit = 96, ping = 112 }, pryamo = new { mbit = 410, ping = 9 }, server = "Нидерланды🇳🇱🔃➗ резервный длинный", kogda = "21.11.2026 01:20" }) },
             { "proverit-sayt", J(new { ok = true, domen = "rutracker.org", napryamuyu = new object[] { 0, 12.0, "не открывается" }, vpn = new object[] { 200, 0.8, "быстро" }, server = "Германия🇩🇪🔃",
                                        sovet = "пустить через VPN — напрямую не открывается", deystvie = "vpn", uzhe_vpn = false, uzhe_napr = false }) },
             { "*", J(new { ok = true, info = "проба" }) },
@@ -1478,7 +1666,7 @@ static class Poddelki
     {
         return new Dictionary<string, string>
         {
-            { "sostoyanie", "{\"karing\":null,\"zapret\":\"да\",\"server\":5,\"skorost\":\"быстро\",\"claude\":null,\"posledniy\":7,\"miganiya\":null,\"igra\":\"dota\",\"bedy\":[null,5,\"zapret не работает\"],\"nastroyki\":null,\"stat\":{\"chasy\":[null,[1],[\"a\",\"b\"],5],\"vybory\":[[\"x\"],null],\"nadezhnost\":{\"A\":null},\"bez_vpn\":\"много\",\"samyy_dlinnyy\":null}," +
+            { "sostoyanie", "{\"golos\":\"x\",\"test_poslednii\":5,\"youtube_sboy\":7,\"karing\":null,\"zapret\":\"да\",\"server\":5,\"skorost\":\"быстро\",\"claude\":null,\"posledniy\":7,\"miganiya\":null,\"igra\":\"dota\",\"bedy\":[null,5,\"zapret не работает\"],\"nastroyki\":null,\"stat\":{\"po_serveram\":[null,[\"a\"],5,[7,\"x\"]],\"chasy\":[null,[1],[\"a\",\"b\"],5],\"vybory\":[[\"x\"],null],\"nadezhnost\":{\"A\":null},\"bez_vpn\":\"много\",\"samyy_dlinnyy\":null}," +
                             "\"nastroyka\":[null,5,{\"id\":null,\"gotovo\":\"нет\",\"tekst\":7},{\"id\":\"zapret\",\"neobyaz\":\"да\",\"sovet\":null},{\"id\":\"karing\",\"tekst\":\"очень длинный текст пункта настройки, чтобы проверить перенос строк и то, что кнопки справа не налезают на текст\",\"sovet\":\"и такой же длинный совет: запустите Karing, добавьте подписку, включите подключение и нажмите «Проверить снова»\"}],\"nastroyka_skryta\":\"нет\",\"claude_znachok\":{\"pokazat\":true,\"server\":[1,2],\"ok\":\"да\",\"proveren\":5}}" },
             // файл хода с мусором: не те типы, шаг за пределами списка, проценты строкой
             { "~hod", "{\"chto\":null,\"idet\":true,\"proshlo\":\"x\",\"fayl\":{\"chto\":5,\"shagi\":[null,\"Шаг\",7],\"shag\":\"два\",\"procent\":\"много\",\"ostalos\":-5,\"tekst\":null,\"obnovleno_nazad\":\"x\",\"konec\":\"нет\"}}" },
@@ -1495,28 +1683,6 @@ static class Poddelki
         };
     }
 }
-
-// большой круг состояния на главной
-class Krug : Control
-{
-    public Color Cvet;
-    public bool Galka;
-    public Krug() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true); }
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        var g = e.Graphics;
-        g.Clear(BackColor);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var b = new SolidBrush(Cvet)) g.FillEllipse(b, 2, 2, Width - 5, Height - 5);
-        using (var p = new Pen(Color.White, Width / 14f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
-        {
-            float w = Width, h = Height;
-            if (Galka) g.DrawLines(p, new[] { new PointF(w * .28f, h * .52f), new PointF(w * .44f, h * .67f), new PointF(w * .73f, h * .36f) });
-            else { g.DrawLine(p, w * .5f, h * .28f, w * .5f, h * .56f); g.DrawLine(p, w * .5f, h * .71f, w * .5f, h * .72f); }
-        }
-    }
-}
-
 
 // журнал нажатий мыши: куда приходят клики (для разбора «кнопки не работают»)
 class SledMyshi : IMessageFilter
